@@ -1,1 +1,1 @@
-Just to watch from who it gets
+# PNG files don't add to git.
