@@ -88,6 +88,7 @@ class Edge:
     color: str | None = None
     width: float | None = None
     direction: str = ""       # '', 'up', 'same'
+    min_span: int = 1         # минимум уровней: 1 для «--», дальше по символу линии
     src_line: int = 0
 
     # --- результат раскладки ---

@@ -42,9 +42,9 @@ IDENT = rf'(?:"[^"]*"|[{_W}][{_W}.:$]*)'
 REL_HEAD = re.compile(rf'^\s*(?P<left>{IDENT})\s*(?:"(?P<lmult>[^"]*)"\s*)?')
 CONN = re.compile(
     r"(?P<tail><\||[<*o+x#}{])?"
-    r"(?P<l1>-{1,4}|\.{2,4}|={2,4}|~{2,4})"
+    r"(?P<l1>-{1,}|\.{2,}|={2,}|~{2,})"
     r"(?:\[(?P<attrs>[^\]]*)\])?"
-    r"(?P<l2>-{0,4}|\.{0,4}|={0,4}|~{0,4})"
+    r"(?P<l2>-{0,}|\.{0,}|={0,}|~{0,})"
     r"(?P<head>\|>|[>*o+x#}{])?"
 )
 REL_TAIL = re.compile(
@@ -110,6 +110,16 @@ NUM_OPTIONS = {"font_size", "node_sep", "rank_sep", "padding", "rounded",
                "title_size", "scale", "stroke_width"}
 
 MAX_EXPANSION_DEPTH = 8
+
+
+def _line_span(left: str, right: str) -> int:
+    """Минимальный охват уровней по длине линии.
+
+    ``--`` (и любой коннектор из двух символов линии) остаётся базовым.
+    Каждый следующий ``-``, ``.``, ``=`` или ``~`` добавляет ещё один уровень:
+    ``---`` длиннее минимума, ``----`` ещё длиннее.
+    """
+    return max(1, len(left) + len(right) - 1)
 
 
 def _unquote(text: str | None) -> str:
@@ -846,6 +856,7 @@ class Parser:
             tail=TAIL_SYMBOLS.get(rel["tail"], "none"),
             head=HEAD_SYMBOLS.get(rel["head"], "none"),
             line=style,
+            min_span=_line_span(rel["l1"], rel["l2"]),
             src_line=no,
         )
         if rel["tail"] and rel["head"] == "" and rel["tail"] in ("<|", "<"):

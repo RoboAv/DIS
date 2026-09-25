@@ -83,6 +83,7 @@ class _Level:
         self.flat: list[_Link] = []
         self._dummy_seq = 0
         self._rank_extent = 0.0
+        self._span_gap: dict[tuple[str, str], float] = {}
 
     # ---------------------------------------------------------------- api --
 
@@ -158,22 +159,28 @@ class _Level:
 
     def _rank_items(self) -> None:
         keys = [it.key for it in self.items]
-        succ: dict[str, set[str]] = defaultdict(set)
+        succ: dict[str, dict[str, int]] = defaultdict(dict)
         indeg: dict[str, int] = {k: 0 for k in keys}
         for link in self.links:
             if link.edge.direction == "same" or link.src == link.dst:
                 continue
-            if link.dst not in succ[link.src]:
-                succ[link.src].add(link.dst)
+            span = _min_span(link.edge)
+            known = succ[link.src]
+            if link.dst not in known:
+                known[link.dst] = span
                 indeg[link.dst] = indeg.get(link.dst, 0) + 1
+            elif span > known[link.dst]:
+                known[link.dst] = span
 
         rank = {k: 0 for k in keys}
         queue = [k for k in keys if indeg.get(k, 0) == 0]
         seen = set(queue)
         while queue:
             node = queue.pop(0)
-            for nxt in sorted(succ.get(node, ()), key=self._index):
-                rank[nxt] = max(rank[nxt], rank[node] + 1)
+            order = sorted(succ.get(node, {}).items(),
+                           key=lambda item: self._index(item[0]))
+            for nxt, span in order:
+                rank[nxt] = max(rank[nxt], rank[node] + span)
                 indeg[nxt] -= 1
                 if indeg[nxt] <= 0 and nxt not in seen:
                     seen.add(nxt)
@@ -215,7 +222,24 @@ class _Level:
                 self.rank[m] = target
 
     def _compact_ranks(self) -> None:
-        used = sorted({r for r in self.rank.values()})
+        """Сжимает пустые уровни, но сохраняет запас, заданный длиной линии.
+
+        «--» по-прежнему занимает один шаг. «---» и более длинные записи
+        держат дополнительные пустые уровни, иначе сжатие съест разницу.
+        """
+        occupied = set(self.rank.values())
+        for link in self.links:
+            if link.edge.direction == "same" or link.src == link.dst:
+                continue
+            src_r = self.rank.get(link.src)
+            dst_r = self.rank.get(link.dst)
+            if src_r is None or dst_r is None:
+                continue
+            lo, hi = (src_r, dst_r) if src_r <= dst_r else (dst_r, src_r)
+            steps = min(_min_span(link.edge), hi - lo)
+            for rank in range(lo, lo + steps):
+                occupied.add(rank)
+        used = sorted(occupied)
         remap = {r: i for i, r in enumerate(used)}
         for key in self.rank:
             self.rank[key] = remap[self.rank[key]]
@@ -368,13 +392,16 @@ class _Level:
     # ------------------------------------------------------- координаты ----
 
     def _order_coords(self) -> None:
+        self._span_gap = self._adjacent_span_extra()
         coords: dict[str, float] = {}
         for layer in self.layers:
             cursor = 0.0
-            for key in layer:
+            for index, key in enumerate(layer):
                 half = self.osize[key] / 2
                 coords[key] = cursor + half
                 cursor += self.osize[key] + self._sep(key)
+                if index + 1 < len(layer):
+                    cursor += self._span_gap.get((key, layer[index + 1]), 0.0)
         self.order = coords
 
         for iteration in range(10):
@@ -408,6 +435,36 @@ class _Level:
     def _sep(self, key: str) -> float:
         return self.opts.dummy_sep if key in self.dummies else self.opts.node_sep
 
+    def _adjacent_span_extra(self) -> dict[tuple[str, str], float]:
+        """Дополнительный зазор между соседями одного уровня.
+
+        Вертикальный (по рангу) запас уже заложен в ``min_span``. Здесь —
+        связи, которые легли в один ряд: «--» оставляет обычный ``node_sep``,
+        каждый лишний символ линии добавляет ещё один ``rank_sep``.
+        """
+        extra: dict[tuple[str, str], float] = {}
+        for link in self.flat:
+            span = _min_span(link.edge)
+            if span <= 1:
+                continue
+            rank = self.rank.get(link.src)
+            if rank is None or rank != self.rank.get(link.dst):
+                continue
+            layer = self.layers[rank]
+            try:
+                left = layer.index(link.src)
+                right = layer.index(link.dst)
+            except ValueError:
+                continue
+            if abs(left - right) != 1:
+                continue
+            if left > right:
+                left, right = right, left
+            key = (layer[left], layer[right])
+            need = (span - 1) * self.opts.rank_sep
+            extra[key] = max(extra.get(key, 0.0), need)
+        return extra
+
     def _fit(self, layer: list[str], targets: list[float],
              weights: list[float]) -> list[float]:
         """Ближайшее к целям размещение, не нарушающее порядок и зазоры."""
@@ -415,6 +472,7 @@ class _Level:
         for i in range(len(layer) - 1):
             gap = (self.osize[layer[i]] + self.osize[layer[i + 1]]) / 2
             gap += max(self._sep(layer[i]), self._sep(layer[i + 1]))
+            gap += self._span_gap.get((layer[i], layer[i + 1]), 0.0)
             offsets.append(offsets[-1] + gap)
         shifted = [t - o for t, o in zip(targets, offsets)]
         fitted = _isotonic(shifted, weights)
@@ -565,6 +623,11 @@ class _Level:
         for link in self.links:
             link.points = [(px + dx, py + dy) for px, py in link.points]
         return (max(xs) - min(xs), max(ys) - min(ys))
+
+
+def _min_span(edge: Edge) -> int:
+    """Сколько уровней обязана занять связь. База «--» — один уровень."""
+    return max(1, int(edge.min_span or 1))
 
 
 def _isotonic(values: list[float], weights: list[float]) -> list[float]:
@@ -859,6 +922,7 @@ def _route_self_loops(diagram: Diagram, opts: LayoutOptions,
         index = counters[edge.a]
         counters[edge.a] += 1
         reach = style.px(26) + index * style.px(14)
+        reach += max(0, _min_span(edge) - 1) * opts.rank_sep
         top = node.y + node.h * 0.28
         low = node.y + node.h * 0.72
         right = node.x + node.w
