@@ -23,8 +23,8 @@ KIND_RE = re.compile(
     r"|abstract\s+class)\b",
     re.IGNORECASE,
 )
-CONNECTOR_RE = re.compile(r"(<\|?|[*o+x#}{])?(-{1,4}|\.{2,4}|={2,4}|~{2,4})"
-                          r"(\[[^\]]*\])?(-{0,4}|\.{0,4}|={0,4}|~{0,4})(\|>|[>*o+x#}{])?")
+CONNECTOR_RE = re.compile(r"(<\|?|[*o+x#}{])?(-{1,}|\.{2,}|={2,}|~{2,})"
+                          r"(\[[^\]]*\])?(-{0,}|\.{0,}|={0,}|~{0,})(\|>|[>*o+x#}{])?")
 STRING_RE = re.compile(r'"[^"\n]*"')
 COLOR_RE = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b")
 PARAM_RE = re.compile(r"\$\{?[\w\u0400-\u04FF]+\}?")
