@@ -1,0 +1,42 @@
+@startuml
+title Контур приложения
+
+set direction LR
+set rank_sep = 90
+
+actor Пользователь
+
+package "Фронтенд" {
+  component Браузер
+  component "SPA\nReact" as SPA
+}
+
+package "Бэкенд" as Back {
+  component "API Gateway" as GW
+  component "Сервис заказов" as Orders
+  component "Сервис оплат" as Pay
+  queue "Шина событий" as Bus
+}
+
+package "Данные" {
+  database "PostgreSQL" as PG
+  database "Redis" as Redis
+  artifact "Отчёты .csv" as Reports
+}
+
+cloud "Платёжный шлюз" as Extern
+
+Пользователь --> Браузер
+Браузер --> SPA
+SPA --> GW : HTTPS
+GW --> Orders
+GW --> Pay
+Orders --> PG
+Orders --> Redis : кэш
+Pay --> Extern : REST
+Orders --> Bus
+Pay --> Bus
+Bus --> Reports
+
+note bottom of GW : Аутентификация\nи ограничение частоты
+@enduml

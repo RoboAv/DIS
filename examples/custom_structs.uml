@@ -1,0 +1,39 @@
+@startuml
+title Свои структуры (шаблоны)
+
+set rank_sep = 70
+
+shape Сервис {
+  form: roundrect
+  accent: #00695c
+  stereotype: service
+}
+
+' Структура — переиспользуемый набор объектов и связей.
+' $Имя и ${Имя} подставляют аргументы.
+struct Трёхслойный(Имя, БД) {
+  Сервис ${Имя}Api as "$Имя API"
+  class ${Имя}Логика {
+    + обработать(команда)
+  }
+  database $БД
+  ${Имя}Api --> ${Имя}Логика
+  ${Имя}Логика --> $БД
+}
+
+package "Заказы" {
+  use Трёхслойный(Order, orders_db)
+}
+
+package "Склад" {
+  use Трёхслойный(Stock, stock_db)
+}
+
+actor Клиент
+Клиент --> OrderApi
+OrderApi ..> StockApi : проверяет остатки
+
+legend
+Одна строка use разворачивается в три объекта и две связи
+endlegend
+@enduml

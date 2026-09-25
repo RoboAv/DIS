@@ -1,0 +1,23 @@
+@startuml
+title Сценарии использования
+
+set direction LR
+set theme = mono
+
+actor Читатель
+actor Библиотекарь
+
+package "Библиотека" {
+  usecase "Найти книгу" as UC1
+  usecase "Взять книгу" as UC2
+  usecase "Вернуть книгу" as UC3
+  usecase "Списать книгу" as UC4
+}
+
+Читатель --> UC1
+Читатель --> UC2
+Читатель --> UC3
+Библиотекарь --> UC3
+Библиотекарь --> UC4
+UC2 ..> UC1 : <<include>>
+@enduml
