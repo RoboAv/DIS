@@ -16,6 +16,7 @@ from .. import __version__, api
 from ..parser import parse
 from . import native, tooltip
 from .dialogs import HelpWindow, LinkDesigner, ShapeDesigner, StructDesigner
+from . import hotkeys
 from .editor import CodeEditor
 from .examples import EXAMPLES, STARTER
 from .palette import colors as ui_colors
@@ -190,6 +191,8 @@ class App(tk.Tk):
         left = ttk.Frame(self.panes)
         self.editor = CodeEditor(left, on_change=self._on_text_change,
                                  on_cursor=self._on_cursor,
+                                 on_message=self._status,
+                                 on_ctrl=self._on_ctrl,
                                  font_size=int(self.settings.get("editor_font", 11)),
                                  palette=self.ui_palette)
         self.editor.pack(fill="both", expand=True)
@@ -234,7 +237,7 @@ class App(tk.Tk):
         edit = tk.Menu(menubar, tearoff=0)
         edit.add_command(label="Отменить", accelerator="Ctrl+Z",
                          command=lambda: self._text_event("<<Undo>>"))
-        edit.add_command(label="Повторить", accelerator="Ctrl+Y",
+        edit.add_command(label="Повторить", accelerator="Ctrl+Shift+Z",
                          command=lambda: self._text_event("<<Redo>>"))
         edit.add_separator()
         edit.add_command(label="Вырезать", command=lambda: self._text_event("<<Cut>>"))
@@ -242,6 +245,15 @@ class App(tk.Tk):
                          command=lambda: self._text_event("<<Copy>>"))
         edit.add_command(label="Вставить",
                          command=lambda: self._text_event("<<Paste>>"))
+        edit.add_command(label="Выделить всё", accelerator="Ctrl+A",
+                         command=lambda: self.editor.select_all())
+        edit.add_separator()
+        edit.add_command(label="Найти…", accelerator="Ctrl+F",
+                         command=lambda: self.editor.open_find())
+        edit.add_command(label="Заменить…", accelerator="Ctrl+H",
+                         command=lambda: self.editor.open_replace())
+        edit.add_command(label="Переименовать…", accelerator="F2",
+                         command=lambda: self.editor.rename_symbol())
         edit.add_separator()
         edit.add_command(label="Крупнее шрифт", accelerator="Ctrl+колесо",
                          command=lambda: self.editor.change_font_size(1))
@@ -384,21 +396,120 @@ class App(tk.Tk):
                      style="Zoom.TButton", side="left", padx=(3, 0))
 
     def _bind_keys(self) -> None:
-        self.bind_all("<Control-n>", lambda e: self.new_file())
-        self.bind_all("<Control-o>", lambda e: self.open_file())
-        self.bind_all("<Control-s>", lambda e: self.save_file())
-        self.bind_all("<Control-Shift-S>", lambda e: self.save_file_as())
-        self.bind_all("<Control-e>", lambda e: self.export_png())
+        self.bind_all("<KeyPress>", self._on_ctrl_global)
+        self.bind_all("<Control-KeyPress>", self._on_ctrl_global)
+        for sequence in ("<Control-Shift-z>", "<Control-Shift-Z>"):
+            self.bind_all(sequence, self._on_ctrl_global)
+        for name in hotkeys.layout_keysyms():
+            for sequence in (f"<Control-{name}>", f"<Control-Shift-{name}>"):
+                try:
+                    self.bind_all(sequence, self._on_ctrl_global)
+                except tk.TclError:
+                    pass
         self.bind_all("<F9>", lambda e: self.quick_export())
         self.bind_all("<F5>", lambda e: self.render_now())
         self.bind_all("<F1>", lambda e: self.show_help())
-        self.bind_all("<Control-plus>", lambda e: self.preview.zoom_in())
-        self.bind_all("<Control-equal>", lambda e: self.preview.zoom_in())
-        self.bind_all("<Control-minus>", lambda e: self.preview.zoom_out())
-        self.bind_all("<Control-0>", lambda e: self.preview.fit())
-        self.bind_all("<Control-Key-1>", lambda e: self.design_shape())
-        self.bind_all("<Control-Key-2>", lambda e: self.design_link())
-        self.bind_all("<Control-Key-3>", lambda e: self.design_struct())
+
+    def _editor_handles_ctrl(self, widget) -> bool:
+        editor = getattr(self, "editor", None)
+        if editor is None:
+            return False
+        return widget in (editor.text, editor._find_entry, editor._replace_entry)
+
+    def _on_ctrl_global(self, event):
+        if not hotkeys.control_down(event) or hotkeys.is_modifier(event):
+            return None
+        if self._editor_handles_ctrl(event.widget):
+            return None
+        if self._on_ctrl(event):
+            return "break"
+        return None
+
+    def _on_ctrl(self, event) -> bool:
+        """Обрабатывает Ctrl+клавиша. True — событие дальше передавать не нужно."""
+        if not hotkeys.control_down(event) or hotkeys.alt_down(event):
+            return False
+        key = hotkeys.latin_key(event)
+        if not key:
+            return False
+        shift = hotkeys.shift_down(event)
+        in_editor = event.widget is self.editor.text
+
+        if key == "a" and not shift:
+            if in_editor:
+                self.editor.select_all()
+                return True
+            if event.widget.winfo_class() in ("TEntry", "Entry"):
+                event.widget.selection_range(0, "end")
+                event.widget.icursor("end")
+                return True
+            return False
+        if key in "cvx" and not in_editor:
+            return False
+        if key == "z" and not in_editor and not shift:
+            return False
+        if in_editor and key == "z" and shift:
+            self._text_event("<<Redo>>")
+            return True
+        if in_editor and key == "z":
+            self._text_event("<<Undo>>")
+            return True
+        if in_editor and key == "y" and not shift:
+            self._text_event("<<Redo>>")
+            return True
+        if in_editor and key == "c" and not shift:
+            self._text_event("<<Copy>>")
+            return True
+        if in_editor and key == "x" and not shift:
+            self._text_event("<<Cut>>")
+            return True
+        if in_editor and key == "v" and not shift:
+            self._text_event("<<Paste>>")
+            return True
+
+        if key == "f" and not shift:
+            self.editor.open_find()
+            return True
+        if key == "h" and not shift:
+            self.editor.open_replace()
+            return True
+        if key == "n" and not shift:
+            self.new_file()
+            return True
+        if key == "o" and not shift:
+            self.open_file()
+            return True
+        if key == "s" and shift:
+            self.save_file_as()
+            return True
+        if key == "s":
+            self.save_file()
+            return True
+        if key == "e" and not shift:
+            self.export_png()
+            return True
+        if key == "=":
+            self.preview.zoom_in()
+            return True
+        if key == "-":
+            self.preview.zoom_out()
+            return True
+        if key == "0" and not shift:
+            self.preview.fit()
+            return True
+        if key == "1" and not shift:
+            self.design_shape()
+            return True
+        if key == "2" and not shift:
+            self.design_link()
+            return True
+        if key == "3" and not shift:
+            self.design_struct()
+            return True
+        return False
+
+    def _status(self, text: str) -> None:
+        self.status_text.configure(text=text)
 
     def _text_event(self, event: str) -> None:
         try:
