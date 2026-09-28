@@ -83,7 +83,8 @@ FALSE_WORDS = {"off", "false", "0", "no", "n", "нет", "выкл"}
 DIR_WORDS = {
     "top": "up", "up": "up", "сверху": "up", "вверх": "up",
     "bottom": "down", "down": "down", "снизу": "down", "вниз": "down",
-    "left": "same", "right": "same", "слева": "same", "справа": "same",
+    "left": "left", "слева": "left",
+    "right": "right", "справа": "right",
 }
 
 OPTION_ALIASES = {
@@ -974,9 +975,10 @@ class Parser:
                                          line="dotted", head="none", tail="none",
                                          src_line=no))
             else:
+                beside = direction if direction in ("left", "right", "same") else ""
                 self.d.edges.append(Edge(a=target, b=name, kind="note",
                                          line="dotted", head="none", tail="none",
-                                         direction="same" if direction == "same" else "",
+                                         direction=beside,
                                          src_line=no))
             return next_i
 
