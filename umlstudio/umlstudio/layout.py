@@ -124,7 +124,7 @@ class _Level:
     def _remove_cycles(self) -> None:
         adjacency: dict[str, list[str]] = defaultdict(list)
         for link in self.links:
-            if link.edge.direction == "same" or link.src == link.dst:
+            if _lateral(link.edge.direction) or link.src == link.dst:
                 continue
             adjacency[link.src].append(link.dst)
 
@@ -162,7 +162,7 @@ class _Level:
         succ: dict[str, dict[str, int]] = defaultdict(dict)
         indeg: dict[str, int] = {k: 0 for k in keys}
         for link in self.links:
-            if link.edge.direction == "same" or link.src == link.dst:
+            if _lateral(link.edge.direction) or link.src == link.dst:
                 continue
             span = _min_span(link.edge)
             known = succ[link.src]
@@ -197,7 +197,7 @@ class _Level:
         return item.index if item else 10**6
 
     def _merge_same_ranks(self) -> None:
-        pairs = [(l.src, l.dst) for l in self.links if l.edge.direction == "same"]
+        pairs = [(l.src, l.dst) for l in self.links if _lateral(l.edge.direction)]
         if not pairs:
             return
         parent: dict[str, str] = {}
@@ -229,7 +229,7 @@ class _Level:
         """
         occupied = set(self.rank.values())
         for link in self.links:
-            if link.edge.direction == "same" or link.src == link.dst:
+            if _lateral(link.edge.direction) or link.src == link.dst:
                 continue
             src_r = self.rank.get(link.src)
             dst_r = self.rank.get(link.dst)
@@ -315,6 +315,7 @@ class _Level:
 
     def _reduce_crossings(self) -> None:
         if len(self.layers) < 2:
+            self._apply_side_hints()
             return
         best = [list(layer) for layer in self.layers]
         best_cost = self._crossings(best)
@@ -328,6 +329,56 @@ class _Level:
             if best_cost == 0:
                 break
         self.layers = best
+        self._apply_side_hints()
+
+    def _apply_side_hints(self) -> None:
+        """``left`` ставит цель левее источника, ``right`` — правее.
+
+        Оба остаются на одном уровне. Порядок остальных узлов сохраняется.
+        """
+        wanted: dict[int, list[tuple[str, str]]] = defaultdict(list)
+        for link in self.links:
+            side = link.edge.direction
+            if side not in ("left", "right"):
+                continue
+            origin, target = (link.dst, link.src) if link.flipped else (link.src, link.dst)
+            rank = self.rank.get(origin)
+            if rank is None or rank != self.rank.get(target):
+                continue
+            pair = (origin, target) if side == "right" else (target, origin)
+            wanted[rank].append(pair)
+        for rank, pairs in wanted.items():
+            if 0 <= rank < len(self.layers):
+                self.layers[rank] = self._order_with_sides(self.layers[rank], pairs)
+
+    @staticmethod
+    def _order_with_sides(layer: list[str], pairs: list[tuple[str, str]]) -> list[str]:
+        index = {key: i for i, key in enumerate(layer)}
+        before: dict[str, set[str]] = defaultdict(set)
+        indeg = {key: 0 for key in layer}
+        for earlier, later in pairs:
+            if earlier not in index or later not in index or earlier == later:
+                continue
+            if later in before[earlier]:
+                continue
+            before[earlier].add(later)
+            indeg[later] += 1
+        if not any(before.values()):
+            return layer
+        remaining = set(layer)
+        ordered: list[str] = []
+        while remaining:
+            ready = [key for key in remaining if indeg[key] == 0]
+            if not ready:
+                ordered.extend(sorted(remaining, key=lambda key: index[key]))
+                break
+            ready.sort(key=lambda key: index[key])
+            pick = ready[0]
+            ordered.append(pick)
+            remaining.remove(pick)
+            for nxt in before.get(pick, ()):
+                indeg[nxt] -= 1
+        return ordered
 
     def _sweep(self, down: bool) -> None:
         pos = self._positions()
@@ -425,12 +476,26 @@ class _Level:
                         targets.append(sum(known) / len(known))
                         weights.append(6.0 if key in self.dummies else 1.0)
                     else:
-                        targets.append(coords[key])
-                        weights.append(0.2)
+                        peers = [coords[n] for n in self._side_peers(key) if n in coords]
+                        if peers:
+                            targets.append(sum(peers) / len(peers))
+                            weights.append(1.0)
+                        else:
+                            targets.append(coords[key])
+                            weights.append(0.2)
                 fitted = self._fit(layer, targets, weights)
                 for key, value in zip(layer, fitted):
                     coords[key] = value
         self.order = coords
+
+    def _side_peers(self, key: str) -> list[str]:
+        peers: list[str] = []
+        for link in self.flat:
+            if link.src == key:
+                peers.append(link.dst)
+            elif link.dst == key:
+                peers.append(link.src)
+        return peers
 
     def _sep(self, key: str) -> float:
         return self.opts.dummy_sep if key in self.dummies else self.opts.node_sep
@@ -529,7 +594,7 @@ class _Level:
                     pts.append((self.order[key], self.rcoord[key]))
                 pts.append((end, self._near(link.dst)))
                 if self.opts.edge_style != "straight":
-                    pts = self._orthogonal(pts)
+                    pts = self._orthogonal(pts, link.src, link.dst)
             link.points = [self._to_xy(o, r) for o, r in pts]
             if link.flipped:
                 link.points.reverse()
@@ -576,21 +641,80 @@ class _Level:
             (self.order[dst], dr),
         ]
 
-    @staticmethod
-    def _orthogonal(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-        out: list[tuple[float, float]] = [points[0]]
-        for i in range(len(points) - 1):
-            a, b = points[i], points[i + 1]
-            if abs(a[0] - b[0]) > 0.75 and abs(a[1] - b[1]) > 0.75:
-                middle = (a[1] + b[1]) / 2
-                out.append((a[0], middle))
-                out.append((b[0], middle))
-            out.append(b)
-        deduped: list[tuple[float, float]] = []
-        for p in out:
-            if not deduped or math.dist(deduped[-1], p) > 0.4:
-                deduped.append(p)
-        return deduped
+    def _orthogonal(self, points: list[tuple[float, float]], src: str,
+                    dst: str) -> list[tuple[float, float]]:
+        """Ортогональный маршрут с минимумом углов.
+
+        Сначала пробует прямую и один сдвиг на весь пролёт. Лишние опоры
+        пропускаются, если так линия не задевает чужие объекты. Обход с
+        дополнительными углами остаётся только там, где прямой ход закрыт.
+        """
+        tol = 0.75
+        guides = _dedup_points(points, 0.4)
+        if len(guides) < 2:
+            return guides
+        obstacles = self._route_obstacles(src, dst)
+        routed = [guides[0]]
+        index = 0
+        while index < len(guides) - 1:
+            bridged = False
+            for target in range(len(guides) - 1, index, -1):
+                bridge = self._axis_bridge(routed[-1], guides[target], guides,
+                                           obstacles, tol)
+                if bridge is None:
+                    continue
+                routed.extend(bridge[1:])
+                index = target
+                bridged = True
+                break
+            if bridged:
+                continue
+            forced = _forced_jog(routed[-1], guides[index + 1], tol)
+            routed.extend(forced[1:])
+            index += 1
+        return _drop_collinear(routed, tol)
+
+    def _route_obstacles(self, src: str, dst: str
+                         ) -> list[tuple[float, float, float, float]]:
+        margin = max(2.0, self.style.px(2))
+        boxes: list[tuple[float, float, float, float]] = []
+        for item in self.items:
+            if item.key in (src, dst):
+                continue
+            cx, cy = self.order[item.key], self.rcoord[item.key]
+            hw = self.osize[item.key] / 2 + margin
+            hh = self.rsize[item.key] / 2 + margin
+            boxes.append((cx - hw, cy - hh, cx + hw, cy + hh))
+        return boxes
+
+    def _axis_bridge(self, start: tuple[float, float], end: tuple[float, float],
+                     guides: list[tuple[float, float]],
+                     obstacles: list[tuple[float, float, float, float]],
+                     tol: float) -> list[tuple[float, float]] | None:
+        """Прямая или один сдвиг. Оба конца остаются на оси ранга."""
+        if abs(end[1] - start[1]) <= tol:
+            return None
+        if abs(start[0] - end[0]) <= tol:
+            path = [start, end]
+            return path if _path_clear(path, obstacles, tol) else None
+        lo, hi = sorted((start[1], end[1]))
+        channels = [(start[1] + end[1]) / 2]
+        inside = [start] + [p for p in guides if lo < p[1] < hi] + [end]
+        inside.sort(key=lambda p: p[1])
+        for left, right in zip(inside, inside[1:]):
+            if abs(right[1] - left[1]) > tol:
+                channels.append((left[1] + right[1]) / 2)
+        mid = (start[1] + end[1]) / 2
+        seen: set[float] = set()
+        for channel in sorted(channels, key=lambda y: abs(y - mid)):
+            key = round(channel, 1)
+            if key in seen or not (lo + tol < channel < hi - tol):
+                continue
+            seen.add(key)
+            path = [start, (start[0], channel), (end[0], channel), end]
+            if _path_clear(path, obstacles, tol):
+                return path
+        return None
 
     def _to_xy(self, order: float, rank: float) -> tuple[float, float]:
         if self.flip_rank:
@@ -623,6 +747,78 @@ class _Level:
         for link in self.links:
             link.points = [(px + dx, py + dy) for px, py in link.points]
         return (max(xs) - min(xs), max(ys) - min(ys))
+
+
+def _lateral(direction: str) -> bool:
+    """Связь вдоль ряда, а не по ходу диаграммы."""
+    return direction in ("same", "left", "right")
+
+
+def _dedup_points(points: list[tuple[float, float]], tol: float
+                  ) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    for point in points:
+        if not out or math.dist(out[-1], point) > tol:
+            out.append(point)
+    return out
+
+
+def _forced_jog(start: tuple[float, float], end: tuple[float, float],
+                tol: float) -> list[tuple[float, float]]:
+    """Сдвиг в середине зазора, если свободный канал не нашёлся."""
+    if abs(start[0] - end[0]) <= tol or abs(start[1] - end[1]) <= tol:
+        return [start, end]
+    middle = (start[1] + end[1]) / 2
+    return [start, (start[0], middle), (end[0], middle), end]
+
+
+def _drop_collinear(points: list[tuple[float, float]], tol: float
+                    ) -> list[tuple[float, float]]:
+    if len(points) < 3:
+        return points
+    out = [points[0]]
+    for index in range(1, len(points) - 1):
+        prev, cur, nxt = out[-1], points[index], points[index + 1]
+        dx1, dy1 = cur[0] - prev[0], cur[1] - prev[1]
+        dx2, dy2 = nxt[0] - cur[0], nxt[1] - cur[1]
+        same_axis = (abs(dx1) <= tol and abs(dx2) <= tol) or (
+            abs(dy1) <= tol and abs(dy2) <= tol)
+        if not same_axis:
+            out.append(cur)
+    out.append(points[-1])
+    return _dedup_points(out, 0.4)
+
+
+def _path_clear(points: list[tuple[float, float]],
+                obstacles: list[tuple[float, float, float, float]],
+                tol: float) -> bool:
+    for index in range(len(points) - 1):
+        start, end = points[index], points[index + 1]
+        for box in obstacles:
+            if _segment_hits(start, end, box, tol):
+                return False
+    return True
+
+
+def _segment_hits(start: tuple[float, float], end: tuple[float, float],
+                  box: tuple[float, float, float, float], tol: float) -> bool:
+    x0, y0, x1, y1 = box
+    dx, dy = abs(start[0] - end[0]), abs(start[1] - end[1])
+    if dx <= tol and dy <= tol:
+        return False
+    if dx <= tol:
+        x = start[0]
+        if x <= x0 + tol or x >= x1 - tol:
+            return False
+        lo, hi = sorted((start[1], end[1]))
+        return hi > y0 + tol and lo < y1 - tol
+    if dy <= tol:
+        y = start[1]
+        if y <= y0 + tol or y >= y1 - tol:
+            return False
+        lo, hi = sorted((start[0], end[0]))
+        return hi > x0 + tol and lo < x1 - tol
+    return True
 
 
 def _min_span(edge: Edge) -> int:
