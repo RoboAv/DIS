@@ -9,10 +9,10 @@ shape relation {
 
 object person
 object company
-object bank
 object credit
 object personal_data
 object company_data
+object operations_history
 
 relation credit_terms {
   Проценты
@@ -25,11 +25,11 @@ relation benefitiar as "Бенефициар"
 company "1" --> benefitiar
 benefitiar --> "0..n" person
 
+personal_data --> operations_history
 person --> personal_data
 person --> credit_terms
 company --> credit_terms
 company --> company_data
 credit_terms -[right]-> credit
-credit -[right]-> bank
 
 @enduml
