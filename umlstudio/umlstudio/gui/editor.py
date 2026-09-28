@@ -35,8 +35,14 @@ KIND_RE = re.compile(
     r"|abstract\s+class)\b",
     re.IGNORECASE,
 )
-CONNECTOR_RE = re.compile(r"(<\|?|[*o+x#}{])?(-{1,}|\.{2,}|={2,}|~{2,})"
-                          r"(\[[^\]]*\])?(-{0,}|\.{0,}|={0,}|~{0,})(\|>|[>*o+x#}{])?")
+_CROW_MARK = (
+    r"\|\||\|o|o\||\}o|o\}|\{o|o\{|\}\||\|\}|\{\||\|\{"
+)
+CONNECTOR_RE = re.compile(
+    rf"(<\||{_CROW_MARK}|[*o+x#}}{{])?(-{{1,}}|\.{{2,}}|={{2,}}|~{{2,}})"
+    rf"(\[[^\]]*\])?(-{{0,}}|\.{{0,}}|={{0,}}|~{{0,}})"
+    rf"(\|>|{_CROW_MARK}|[>*o+x#}}{{])?"
+)
 STRING_RE = re.compile(r'"[^"\n]*"')
 COLOR_RE = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b")
 PARAM_RE = re.compile(r"\$\{?[\w\u0400-\u04FF]+\}?")

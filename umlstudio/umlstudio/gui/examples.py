@@ -354,6 +354,14 @@ SYNTAX_HELP = """СПРАВКА ПО СИНТАКСИСУ
   A *-- B           композиция (ромб у A)
   A o-- B           агрегация
   A }-- B           «гусиная лапка»
+
+  Воронья лапка, знак у объекта — кратность, дальний — обязательность:
+      A ||--|| B          ровно один (обязательно)
+      A |o--o| B          ноль или один (опционально)
+      A }o--o} B          ноль или много (опционально)
+      A }|--|} B          один или много (обязательно)
+      Заказ ||--o{ Строка : содержит
+
   A -- B : подпись
   A "1" --> "0..*" B : содержит
 
@@ -422,7 +430,8 @@ SYNTAX_HELP = """СПРАВКА ПО СИНТАКСИСУ
   A -[поток]-> B
 
   Окончания: none, arrow, arrow_filled, triangle, triangle_filled,
-  diamond, diamond_filled, circle, circle_filled, cross, bar, crowfoot.
+  diamond, diamond_filled, circle, circle_filled, cross, bar, crowfoot,
+  exactly_one, zero_or_one, zero_or_many, one_or_many.
 
 --------------------------------------------------------------------
 5. СВОИ СТРУКТУРЫ (ШАБЛОНЫ)

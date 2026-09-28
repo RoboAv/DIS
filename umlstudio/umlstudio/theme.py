@@ -268,7 +268,26 @@ DECORATIONS = (
     "cross",
     "bar",
     "crowfoot",
+    "exactly_one",
+    "zero_or_one",
+    "zero_or_many",
+    "one_or_many",
 )
+
+#: Пары знаков нотации вороньей лапки. Ближний к объекту знак — кратность.
+CROW_MARKS = {
+    "||": "exactly_one",
+    "|o": "zero_or_one",
+    "o|": "zero_or_one",
+    "}o": "zero_or_many",
+    "o}": "zero_or_many",
+    "{o": "zero_or_many",
+    "o{": "zero_or_many",
+    "}|": "one_or_many",
+    "|}": "one_or_many",
+    "{|": "one_or_many",
+    "|{": "one_or_many",
+}
 
 #: Символ окончания -> украшение. Используется парсером коннекторов.
 TAIL_SYMBOLS = {
@@ -281,6 +300,7 @@ TAIL_SYMBOLS = {
     "#": "bar",
     "}": "crowfoot",
     "{": "crowfoot",
+    **CROW_MARKS,
 }
 HEAD_SYMBOLS = {
     "|>": "triangle",
@@ -292,6 +312,7 @@ HEAD_SYMBOLS = {
     "#": "bar",
     "{": "crowfoot",
     "}": "crowfoot",
+    **CROW_MARKS,
 }
 
 #: Стиль линии по символу.
