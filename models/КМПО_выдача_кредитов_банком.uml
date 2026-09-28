@@ -1,0 +1,33 @@
+@startuml
+' title test
+
+shape relation {
+  form: diamond
+}
+
+object person
+object company
+object bank
+object credit
+object personal_data
+object company_data
+
+relation credit_terms {
+  Проценты
+  Сумма
+  Срок
+  Кол-во выплат
+}
+relation benefitiar as "Бенефициар"
+
+company "1" --> benefitiar
+benefitiar --> "0..n" person
+
+person --> personal_data
+person -[left]-> credit_terms
+company --> credit_terms
+company -[left]-> company_data
+credit_terms --> credit
+credit --> bank
+
+@enduml
