@@ -155,12 +155,70 @@ def _bar(draw, tip, direction, stroke, background, width, scale) -> float:
     return 1.0 * scale
 
 
+def _tick(draw, at: Point, direction: Point, stroke: Color, width: int,
+          scale: float) -> None:
+    half = 6.5 * scale
+    side = _side(direction)
+    thick = max(width, int(round(2 * scale)))
+    draw.line([(at[0] + side[0] * half, at[1] + side[1] * half),
+               (at[0] - side[0] * half, at[1] - side[1] * half)],
+              fill=stroke, width=thick)
+
+
+def _hollow(draw, center: Point, radius: float, stroke: Color,
+            background: Color, width: int) -> None:
+    box = (center[0] - radius, center[1] - radius,
+           center[0] + radius, center[1] + radius)
+    draw.ellipse(box, fill=background, outline=stroke, width=width)
+
+
+def _foot(draw, tip: Point, direction: Point, stroke: Color, width: int,
+          scale: float) -> float:
+    """Лапка: зубцы на границе объекта, сходятся ближе к линии."""
+    length, half = 11.0 * scale, 6.5 * scale
+    point = _back(tip, direction, length)
+    side = _side(direction)
+    left = (tip[0] + side[0] * half, tip[1] + side[1] * half)
+    right = (tip[0] - side[0] * half, tip[1] - side[1] * half)
+    for end in (left, tip, right):
+        draw.line([point, end], fill=stroke, width=width)
+    return length
+
+
 def _crowfoot(draw, tip, direction, stroke, background, width, scale) -> float:
-    length, half = 12.0 * scale, 7.0 * scale
-    base, left, right = _wing(tip, direction, length, half)
-    for point in (left, right, base):
-        draw.line([tip, point], fill=stroke, width=width, joint="curve")
-    return 0.0
+    return _foot(draw, tip, direction, stroke, width, scale)
+
+
+def _exactly_one(draw, tip, direction, stroke, background, width, scale) -> float:
+    gap = 5.0 * scale
+    _tick(draw, tip, direction, stroke, width, scale)
+    _tick(draw, _back(tip, direction, gap), direction, stroke, width, scale)
+    return gap + scale
+
+
+def _zero_or_one(draw, tip, direction, stroke, background, width, scale) -> float:
+    radius = 4.2 * scale
+    gap = 3.5 * scale
+    _tick(draw, tip, direction, stroke, width, scale)
+    _hollow(draw, _back(tip, direction, gap + radius), radius, stroke,
+            background, width)
+    return gap + 2 * radius
+
+
+def _one_or_many(draw, tip, direction, stroke, background, width, scale) -> float:
+    reach = _foot(draw, tip, direction, stroke, width, scale)
+    gap = 3.2 * scale
+    _tick(draw, _back(tip, direction, reach + gap), direction, stroke, width, scale)
+    return reach + gap + scale
+
+
+def _zero_or_many(draw, tip, direction, stroke, background, width, scale) -> float:
+    reach = _foot(draw, tip, direction, stroke, width, scale)
+    radius = 4.2 * scale
+    gap = 2.5 * scale
+    _hollow(draw, _back(tip, direction, reach + gap + radius), radius, stroke,
+            background, width)
+    return reach + gap + 2 * radius
 
 
 _PAINTERS = {
@@ -175,6 +233,10 @@ _PAINTERS = {
     "cross": _cross,
     "bar": _bar,
     "crowfoot": _crowfoot,
+    "exactly_one": _exactly_one,
+    "zero_or_one": _zero_or_one,
+    "one_or_many": _one_or_many,
+    "zero_or_many": _zero_or_many,
 }
 
 #: Список для интерфейса: человекочитаемые названия.
@@ -191,4 +253,8 @@ DECORATION_NAMES = {
     "cross": "крест",
     "bar": "черта",
     "crowfoot": "«гусиная лапка»",
+    "exactly_one": "ровно один (||)",
+    "zero_or_one": "ноль или один (|o)",
+    "zero_or_many": "ноль или много (}o)",
+    "one_or_many": "один или много (}|)",
 }
