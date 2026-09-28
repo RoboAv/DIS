@@ -14,7 +14,7 @@ from .geometry import (
     round_corners,
 )
 from .model import Diagram, Edge, Group, Node
-from .shapes import ShapeStyle, content_inset, draw_form
+from .shapes import ShapeStyle, content_inset, draw_form, horizontal_chords
 from .style import VISIBILITY_COLORS, StyleResolver
 from .theme import Theme, to_rgb
 
@@ -122,9 +122,8 @@ class Renderer:
 
         metrics = self.s.group_metrics(group)
         header = group.header_h or metrics["header_h"]
-        draw.line([(group.x + self.s.px(1), group.y + header),
-                   (group.x + group.w - self.s.px(1), group.y + header)],
-                  fill=_rgba(st["stroke"], 150), width=1)
+        self._draw_inside_line(draw, "rect", box, shape.radius, shape.scale,
+                               group.y + header, _rgba(st["stroke"], 150))
 
         size = metrics["font_size"]
         font = self.s.fonts.get(self.s.fs(size), bold=True)
@@ -167,23 +166,25 @@ class Renderer:
         left = cx0 + pad_x
         right = cx1 - pad_x
         y = cy0 + max(0.0, ((cy1 - cy0) - content_h) / 2)
-        rectish = form in ("rect", "roundrect", "component", "note", "folder",
-                           "node3d")
-        sep_x0 = node.x + self.s.px(1) if rectish else left
-        sep_x1 = node.x + node.w - self.s.px(1) if rectish else right
-        if form == "node3d":
-            sep_x1 = cx1
+        radius = self.s.px(self.t.rounded)
 
         for row in node.rows:
             height = row["h"]
             if row["type"] == "sep":
                 mid = y + height / 2
-                draw.line([(sep_x0, mid), (sep_x1, mid)],
-                          fill=_rgba(st["stroke"], 110), width=1)
+                self._draw_inside_line(draw, form, node.box(), radius, self.scale,
+                                       mid, _rgba(st["stroke"], 110))
                 y += height + gap
                 continue
             self._draw_text_row(draw, row, st, left, right, y)
             y += height + gap
+
+    def _draw_inside_line(self, draw: ImageDraw.ImageDraw, form: str,
+                          box: tuple[float, float, float, float], radius: float,
+                          scale: float, y: float, color: Color) -> None:
+        """Горизонталь строго внутри формы: концы лежат на её границе."""
+        for x0, x1 in horizontal_chords(form, box, y, radius, scale):
+            draw.line([(x0, y), (x1, y)], fill=color, width=1)
 
     def _draw_text_row(self, draw: ImageDraw.ImageDraw, row: dict, st: dict,
                        left: float, right: float, y: float) -> None:

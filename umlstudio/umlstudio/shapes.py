@@ -319,6 +319,144 @@ def _actor(draw, box: Box, st: ShapeStyle) -> None:
                    (cx + unit * 0.26, y0 + unit * 0.98)], st, close=False)
 
 
+def horizontal_chords(form: str, box: Box, y: float, radius: float,
+                      scale: float) -> list[tuple[float, float]]:
+    """Отрезки горизонтали ``y``, лежащие внутри формы.
+
+    Концы каждого отрезка лежат на контуре: линия доходит до границы
+    и не выходит за неё.
+    """
+    spans: list[tuple[float, float]] = []
+    for region in _regions(form, box, radius, scale):
+        spans.extend(_chord_spans(region, y))
+    return _merge_spans(spans)
+
+
+def _regions(form: str, box: Box, radius: float, scale: float) -> list[list[Point]]:
+    """Залитые области формы — те же контуры, что у ``draw_form``."""
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+    if form == "roundrect":
+        radius = min(h * 0.32, w * 0.32, 22 * scale)
+        return [_round_rect_points(box, radius)]
+    if form == "stadium":
+        return [_round_rect_points(box, h / 2)]
+    if form == "rect":
+        return [_round_rect_points(box, radius)]
+    if form == "ellipse":
+        return [_ellipse_points(box)]
+    if form == "circle":
+        size = min(w, h)
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        square = (cx - size / 2, cy - size / 2, cx + size / 2, cy + size / 2)
+        return [_ellipse_points(square)]
+    if form in ("dot", "ring"):
+        return [_ellipse_points(_marker_box(box, scale))]
+    if form == "hexagon":
+        cut = w * 0.16
+        mid = (y0 + y1) / 2
+        return [[(x0 + cut, y0), (x1 - cut, y0), (x1, mid),
+                 (x1 - cut, y1), (x0 + cut, y1), (x0, mid)]]
+    if form == "diamond":
+        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+        return [[(mx, y0), (x1, my), (mx, y1), (x0, my)]]
+    if form == "cloud":
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        rx, ry = w / 2, h / 2
+        points: list[Point] = []
+        for i in range(120):
+            angle = 2 * math.pi * i / 120
+            bump = 1.0 + 0.11 * math.cos(6 * angle) + 0.05 * math.sin(3 * angle)
+            points.append((cx + rx * bump * 0.92 * math.cos(angle),
+                           cy + ry * bump * 0.90 * math.sin(angle)))
+        return [points]
+    if form == "note":
+        fold = _fold(w, h)
+        return [[(x0, y0), (x1 - fold, y0), (x1, y0 + fold), (x1, y1), (x0, y1)]]
+    if form == "folder":
+        tab = _tab_h(h)
+        width = min(w * 0.42, 90 * scale)
+        return [[(x0, y0), (x0 + width, y0), (x0 + width + tab * 0.55, y0 + tab),
+                 (x1, y0 + tab), (x1, y1), (x0, y1)]]
+    if form == "component":
+        body = _round_rect_points(box, radius * 0.6)
+        tab_w = _comp_tab(w)
+        tab_h = max(6.0, h * 0.14)
+        tabs: list[list[Point]] = []
+        for factor in (0.26, 0.58):
+            ty = y0 + h * factor
+            tabs.append([(x0 - tab_w * 0.45, ty), (x0 + tab_w * 0.55, ty),
+                         (x0 + tab_w * 0.55, ty + tab_h),
+                         (x0 - tab_w * 0.45, ty + tab_h)])
+        return [body, *tabs]
+    if form == "node3d":
+        d = _depth(w, h)
+        return [[(x0, y0 + d), (x1 - d, y0 + d), (x1 - d, y1), (x0, y1)]]
+    if form == "cylinder":
+        r = _cyl_r(h)
+        top = (x0, y0, x1, y0 + 2 * r)
+        bottom = (x0, y1 - 2 * r, x1, y1)
+        outline = _ellipse_points(top, start=180.0, end=360.0)
+        outline += _ellipse_points(bottom, start=0.0, end=180.0)
+        return [outline]
+    if form == "queue":
+        r = _queue_r(w)
+        left = (x0, y0, x0 + 2 * r, y1)
+        right = (x1 - 2 * r, y0, x1, y1)
+        outline = _ellipse_points(left, start=90.0, end=270.0)
+        outline += _ellipse_points(right, start=-90.0, end=90.0)
+        return [outline]
+    if form == "document":
+        wave = _wave(h)
+        points = [(x0, y0), (x1, y0), (x1, y1 - wave)]
+        steps = 16
+        for i in range(steps + 1):
+            t = i / steps
+            points.append((x1 + (x0 - x1) * t,
+                           y1 - wave + math.sin(t * math.pi * 2) * wave * 0.85))
+        return [points]
+    if form == "actor":
+        cx = (x0 + x1) / 2
+        unit = 34 * scale
+        head_r = unit * 0.24
+        head_cy = y0 + head_r + unit * 0.06
+        return [_ellipse_points((cx - head_r, head_cy - head_r,
+                                 cx + head_r, head_cy + head_r))]
+    return [_round_rect_points(box, radius)]
+
+
+def _chord_spans(points: list[Point], y: float) -> list[tuple[float, float]]:
+    xs: list[float] = []
+    count = len(points)
+    for i in range(count):
+        x0, y0 = points[i]
+        x1, y1 = points[(i + 1) % count]
+        if (y0 > y) == (y1 > y):
+            continue
+        t = (y - y0) / (y1 - y0)
+        xs.append(x0 + (x1 - x0) * t)
+    xs.sort()
+    spans: list[tuple[float, float]] = []
+    for i in range(0, len(xs) - 1, 2):
+        if xs[i + 1] - xs[i] > 1.0:
+            spans.append((xs[i], xs[i + 1]))
+    return spans
+
+
+def _merge_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    if not spans:
+        return []
+    spans = sorted(spans)
+    merged = [spans[0]]
+    for left, right in spans[1:]:
+        prev_l, prev_r = merged[-1]
+        if left <= prev_r + 0.6:
+            merged[-1] = (prev_l, max(prev_r, right))
+        else:
+            merged.append((left, right))
+    return merged
+
+
 _PAINTERS = {
     "rect": _rect,
     "roundrect": _roundrect,
