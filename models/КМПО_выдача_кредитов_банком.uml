@@ -1,6 +1,8 @@
 @startuml
 ' title test
 
+set hide_empty = on
+
 shape relation {
   form: diamond
 }
@@ -24,10 +26,10 @@ company "1" --> benefitiar
 benefitiar --> "0..n" person
 
 person --> personal_data
-person -[left]-> credit_terms
+person --> credit_terms
 company --> credit_terms
-company -[left]-> company_data
-credit_terms --> credit
-credit --> bank
+company --> company_data
+credit_terms -[right]-> credit
+credit -[right]-> bank
 
 @enduml
