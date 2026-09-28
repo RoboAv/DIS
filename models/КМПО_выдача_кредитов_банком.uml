@@ -1,35 +1,123 @@
 @startuml
-' title test
+title Концептуальная модель предметной области выдачи кредитов
 
+set theme = light
+set direction = TB
+set rank_sep = 34
+set node_sep = 40
+set font_size = 13
 set hide_empty = on
 
-shape relation {
+shape сущность extends class {
+  accent: #1565c0
+}
+
+shape связь {
   form: diamond
+  accent: #6a1b9a
 }
 
-object person
-object company
-object credit
-object personal_data
-object company_data
-object operations_history
-
-relation credit_terms {
-  Проценты
-  Сумма
-  Срок
-  Кол-во выплат
+сущность "Физическое лицо" as Person {
+  ФИО
+  паспорт
+  ИНН
+  доход
 }
-relation benefitiar as "Бенефициар"
 
-company "1" --> benefitiar
-benefitiar --> "0..n" person
+сущность "Юридическое лицо" as Company {
+  наименование
+  ИНН
+  ОГРН
+  выручка
+}
 
-personal_data --> operations_history
-person --> personal_data
-person --> credit_terms
-company --> credit_terms
-company --> company_data
-credit_terms -[right]-> credit
+сущность "Кредитная история" as History {
+  бюро
+  балл
+  самозапрет
+  обязательства
+}
+
+сущность "Кредитный продукт" as Product {
+  наименование
+  вид
+  валюта
+  границы суммы и срока
+}
+
+сущность "Заявка" as Application {
+  номер
+  дата и канал
+  сумма и срок
+  статус
+}
+
+сущность "Кредитное решение" as Decision {
+  результат
+  одобренные условия
+  ПДН
+  способ принятия
+}
+
+сущность "Кредитный договор" as Contract {
+  сумма, ставка, срок
+  ПСК
+  счёт зачисления
+  статус
+}
+
+сущность "Платёж" as Payment {
+  плановая дата
+  основной долг
+  проценты
+  статус
+}
+
+сущность "Обеспечение" as Collateral {
+  вид
+  предмет
+  оценочная стоимость
+}
+
+сущность "Страховой договор" as Insurance {
+  вид
+  страховщик
+  премия
+  срок
+}
+
+связь Beneficiary as "бенефициар" {
+  доля
+  основание
+}
+
+Person "1..n" -[right]- Beneficiary
+Beneficiary -[right]- "1" Company
+
+Person "1" -- "0..n" Application : подаёт
+Company "1" -- "0..n" Application : подаёт
+
+Person "1" -[up]- "0..n" History : история
+Company "1" -[up]- "0..n" History : история
+
+Application -[right]- Product
+
+Application "1" -- "1..n" Decision : рассматривается
+Decision -- Contract : порождает
+
+Person -- Contract : поручительство
+
+Contract "1" -- "1..n" Payment : график
+Contract "1" -- "0..n" Collateral : обеспечивается
+Contract "1" -- "0..n" Insurance : страхуется
+
+Payment -[hidden,right]- Collateral
+Collateral -[hidden,right]- Insurance
+
+legend
+Прямоугольник — сущность. Ромб — связь с собственными атрибутами.
+Подпись на линии — имя связи.
+Линия без подписи: заявка на один кредитный продукт.
+endlegend
 
 @enduml
