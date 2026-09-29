@@ -2,12 +2,12 @@
 
 set theme = light
 set direction = TB
-set rank_sep = 22
-set node_sep = 22
+set rank_sep = 46
+set node_sep = 108
 set font_size = 13
 set font = Segoe UI
 set hide_empty = on
-set padding = 12
+set padding = 16
 set shadow = off
 
 shape сущность extends class {
@@ -120,37 +120,50 @@ shape контроль extends class {
   признак добровольности
 }
 
-Person ||---[right]-o{ Ben
-Ben }|---[right]-|| Company
+' Верхний ряд: согласие, история, заявка и продукт стоят рядом,
+' поэтому подписи не пересекают блоки заёмщиков.
+' Идентификация опущена ниже и не лежит на линиях заявки.
+' Сотрудник и журнал — отдельный столбец справа.
 
-Person ||---o{ Consent : даёт
-Consent |o--o{ History : разрешает
+Consent -[hidden,right]- History
+History -[hidden,right]- Application
+Application -[hidden,right]- Product
 
-' History -[hidden,right]- Ident
-Person ||--o{ Ident : проходит
-Company ||--o{ Ident : проходит
-Company |o----o{ History : субъект
+Person -[hidden,right]- Ben
+Ben -[hidden,right]- Company
+Company -[hidden,right]- Decision
 
-' Product ||--o{ Application
-Application }o---[right]-|| Product
-Application }o--[up]-|| Rule
-History }o--[right]-|| Application : используется
-Person }o-[down]-o{ Application
-Company |o-[down]-o{ Application : подаёт
+Consent |o-[right]-o{ History : разрешает
+History }o-[right]-|| Application : используется
+Application }o-[right]-|| Product
+
+Person ||-[up]-o{ Consent : даёт
+Company |o-[up]-o{ History : субъект
+Person }o-[up]-o{ Application
+Company |o-[up]-o{ Application : подаёт
+
+Person ||-[right]-o{ Ben
+Ben }|-[right]-|| Company
+
+Person ||-[down]-o{ Ident : проходит
+Company ||-[down]-o{ Ident : проходит
 
 Application ||-[down]-|{ Decision : рассматривается
-' Decision -[hidden,right]- Staff
-Decision ||-[down]-o| Contract : порождает
-' Contract -[hidden,right]- Audit
+Rule ||-[up]-o{ Application
+Decision -[hidden,right]- Rule
+
+Rule -[hidden]- Staff
 Staff ||-[down]-o{ Audit : выполняет
+Decision ||-[down]-o| Contract : порождает
 
 Contract ||--|{ Payment : график
 Contract ||--o{ Collateral : обеспечивается
 Contract ||--o{ Insurance : страхуется
-' Payment -[hidden,right]- Collateral
-' Collateral -[hidden,right]- Insurance
-
+Contract ||--o{ Surety
 Person ||-[down]-o{ Surety
-Contract ||---[left]-o{ Surety
+
+Surety -[hidden,right]- Payment
+Payment -[hidden,right]- Collateral
+Collateral -[hidden,right]- Insurance
 
 @enduml
