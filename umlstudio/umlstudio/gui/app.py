@@ -247,6 +247,8 @@ class App(tk.Tk):
                          command=lambda: self._text_event("<<Paste>>"))
         edit.add_command(label="Выделить всё", accelerator="Ctrl+A",
                          command=lambda: self.editor.select_all())
+        edit.add_command(label="Закомментировать строки", accelerator="Ctrl+/",
+                         command=lambda: self.editor.toggle_comments())
         edit.add_separator()
         edit.add_command(label="Найти…", accelerator="Ctrl+F",
                          command=lambda: self.editor.open_find())
@@ -465,6 +467,9 @@ class App(tk.Tk):
             return True
         if in_editor and key == "v" and not shift:
             self._text_event("<<Paste>>")
+            return True
+        if in_editor and key == "/":
+            self.editor.toggle_comments()
             return True
 
         if key == "f" and not shift:
