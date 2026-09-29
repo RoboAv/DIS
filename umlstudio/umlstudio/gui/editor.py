@@ -49,6 +49,35 @@ PARAM_RE = re.compile(r"\$\{?[\w\u0400-\u04FF]+\}?")
 STEREO_RE = re.compile(r"<<[^>\n]*>>")
 PROPERTY_RE = re.compile(r"^\s*[\w\u0400-\u04FF-]+\s*:")
 VISIBILITY_RE = re.compile(r"^\s*(\{\s*\w+\s*\}\s*)*[-+#~]")
+_LINE_COMMENT_RE = re.compile(r"^([ \t]*)(?://|') ?")
+
+
+def _is_comment_line(line: str) -> bool:
+    stripped = line.lstrip(" \t")
+    return stripped.startswith("'") or stripped.startswith("//")
+
+
+def _should_uncomment(lines: list[str]) -> bool:
+    """Снимать пометку, если каждая непустая строка уже комментарий."""
+    content = [line for line in lines if line.strip()]
+    return bool(content) and all(_is_comment_line(line) for line in content)
+
+
+def _comment_line(line: str) -> str:
+    indent = re.match(r"[ \t]*", line).group(0)
+    return f"{indent}' {line[len(indent):]}"
+
+
+def _uncomment_line(line: str) -> str:
+    return _LINE_COMMENT_RE.sub(r"\1", line, count=1)
+
+
+def _shifted_column(old: str, new: str, col: int) -> int:
+    indent = len(old) - len(old.lstrip(" \t"))
+    if col <= indent:
+        return col
+    return max(indent, col + len(new) - len(old))
+
 
 PALETTES = {
     "light": {
@@ -223,6 +252,50 @@ class CodeEditor(ttk.Frame):
         last = int(self.text.index("sel.last").split(".")[0])
         for line in range(first, last + 1):
             self.text.insert(f"{line}.0", prefix)
+
+    def toggle_comments(self) -> None:
+        """Закомментировать выделенные строки или текущую. Повтор снимает пометку."""
+        had_sel = bool(self.text.tag_ranges("sel"))
+        first, last = self._comment_span()
+        row_s, col_s = self.text.index("insert").split(".")
+        row, col = int(row_s), int(col_s)
+        lines = [self.text.get(f"{n}.0", f"{n}.end") for n in range(first, last + 1)]
+        uncomment = _should_uncomment(lines)
+        cursor_line = lines[row - first] if first <= row <= last else None
+
+        self._begin_edit()
+        try:
+            for offset, line in enumerate(lines):
+                updated = _uncomment_line(line) if uncomment else _comment_line(line)
+                if updated == line:
+                    continue
+                n = first + offset
+                self.text.delete(f"{n}.0", f"{n}.end")
+                self.text.insert(f"{n}.0", updated)
+        finally:
+            self._end_edit()
+
+        self.text.tag_remove("sel", "1.0", "end")
+        if had_sel:
+            self.text.tag_add("sel", f"{first}.0", f"{last}.end")
+            self.text.mark_set("insert", f"{last}.end")
+        elif cursor_line is not None:
+            updated = _uncomment_line(cursor_line) if uncomment else _comment_line(cursor_line)
+            self.text.mark_set("insert", f"{row}.{_shifted_column(cursor_line, updated, col)}")
+        self.text.see("insert")
+        self._changed()
+
+    def _comment_span(self) -> tuple[int, int]:
+        """Строки выделения. Курсор в начале следующей строки в диапазон не входит."""
+        if not self.text.tag_ranges("sel"):
+            line = int(self.text.index("insert").split(".")[0])
+            return line, line
+        first = int(self.text.index("sel.first").split(".")[0])
+        last_line, last_col = self.text.index("sel.last").split(".")
+        last = int(last_line)
+        if last_col == "0" and last > first:
+            last -= 1
+        return first, last
 
     def _changed(self, event=None) -> None:
         self.schedule_paint()
@@ -702,6 +775,7 @@ class CodeEditor(ttk.Frame):
         widget.bind("<Control-KeyPress>", self._on_ctrl_key)
         for sequence in (
             "<Control-h>", "<Control-H>",
+            "<Control-slash>", "<Control-question>", "<Control-KP_Divide>",
             "<Control-Shift-z>", "<Control-Shift-Z>",
             "<Control-Shift-Key-z>", "<Control-Shift-Key-Z>",
         ):

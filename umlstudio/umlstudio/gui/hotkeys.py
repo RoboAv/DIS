@@ -106,11 +106,25 @@ def _vk_key(code: int) -> str | None:
         return "="
     if code in (189, 109):
         return "-"
+    if code in (191, 111):  # VK_OEM_2 «/?», VK_DIVIDE
+        return "/"
     return None
 
 
+def _oem_slash(event) -> bool:
+    """Физическая клавиша «/». На русской раскладке она печатает «.»."""
+    if sys.platform != "win32":
+        return False
+    code = int(getattr(event, "keycode", 0) or 0)
+    if not code:
+        return False
+    # MAPVK_VK_TO_VSC: скан-код 0x35 — клавиша «/?» на стандартной клавиатуре.
+    scan = int(ctypes.windll.user32.MapVirtualKeyW(code, 0)) & 0xFF
+    return scan == 0x35
+
+
 def latin_key(event) -> str | None:
-    """Латинская буква, цифра, «=» или «-». Буква в нижнем регистре."""
+    """Латинская буква, цифра, «=», «-» или «/». Буква в нижнем регистре."""
     keysym = str(getattr(event, "keysym", "") or "")
     number = int(getattr(event, "keysym_num", 0) or 0)
     if len(keysym) == 1 and keysym.isascii() and keysym.isalpha():
@@ -146,6 +160,10 @@ def latin_key(event) -> str | None:
         return "="
     if keysym in ("minus", "KP_Subtract"):
         return "-"
+    if keysym in ("slash", "question", "KP_Divide") or char == "/":
+        return "/"
+    if _oem_slash(event):
+        return "/"
     return None
 
 
