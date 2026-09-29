@@ -1,12 +1,14 @@
 @startuml
-title Концептуальная модель предметной области выдачи кредитов
 
 set theme = light
 set direction = TB
-set rank_sep = 34
-set node_sep = 40
+set rank_sep = 22
+set node_sep = 22
 set font_size = 13
+set font = Segoe UI
 set hide_empty = on
+set padding = 12
+set shadow = off
 
 shape сущность extends class {
   accent: #1565c0
@@ -17,107 +19,144 @@ shape связь {
   accent: #6a1b9a
 }
 
+shape контроль extends class {
+  accent: #b71c1c
+}
+
 сущность "Физическое лицо" as Person {
-  ФИО
-  паспорт
-  ИНН
-  доход
+  ФИО, паспорт
+  ИНН, СНИЛС, доход
+  адрес и телефон
 }
 
 сущность "Юридическое лицо" as Company {
   наименование
-  ИНН
-  ОГРН
-  выручка
+  ИНН, ОГРН, КПП
+  адрес и выручка
+}
+
+связь Ben as "бенефициар" {
+  доля
+  основание контроля
+}
+
+контроль "Согласие" as Consent {
+  цель и основание
+  срок и способ
+  дата отзыва
 }
 
 сущность "Кредитная история" as History {
-  бюро
-  балл
+  бюро и дата
+  балл, обязательства
   самозапрет
-  обязательства
+}
+
+контроль "Идентификация" as Ident {
+  дата и способ
+  уровень риска
+  статус и срок
 }
 
 сущность "Кредитный продукт" as Product {
-  наименование
-  вид
-  валюта
-  границы суммы и срока
+  вид, валюта, границы
+  залог и охлаждение
+  срок одобрения
 }
 
 сущность "Заявка" as Application {
-  номер
-  дата и канал
-  сумма и срок
-  статус
+  номер, канал, статус
+  сумма, срок, цель
+  статус хранения
+}
+
+контроль "Правило хранения" as Rule {
+  категория сведений
+  основание и срок
+  событие начала
 }
 
 сущность "Кредитное решение" as Decision {
-  результат
-  одобренные условия
-  ПДН
-  способ принятия
+  результат и условия
+  ПДН и способ
+  причина отказа
+}
+
+контроль "Сотрудник" as Staff {
+  роль
 }
 
 сущность "Кредитный договор" as Contract {
-  сумма, ставка, срок
-  ПСК
-  счёт зачисления
-  статус
+  сумма, ставка, ПСК
+  счёт и подписание
+  охлаждение, статус
+}
+
+контроль "Журнал доступа" as Audit {
+  действие и объект
+  время и основание
+  срок хранения
+}
+
+связь Surety as "поручительство" {
+  дата
+  предел ответственности
 }
 
 сущность "Платёж" as Payment {
   плановая дата
-  основной долг
-  проценты
-  статус
+  долг и проценты
+  статус оплаты
 }
 
 сущность "Обеспечение" as Collateral {
-  вид
-  предмет
+  вид и предмет
   оценочная стоимость
 }
 
 сущность "Страховой договор" as Insurance {
-  вид
-  страховщик
-  премия
-  срок
+  вид и страховщик
+  премия и срок
+  признак добровольности
 }
 
-связь Beneficiary as "бенефициар" {
-  доля
-  основание
-}
+Person ||---[right]-o{ Ben
+Ben }|---[right]-|| Company
 
-Person "1..n" -[right]- Beneficiary
-Beneficiary -[right]- "1" Company
+Person ||---o{ Consent : даёт
+Consent |o--o{ History : разрешает
 
-Person "1" -- "0..n" Application : подаёт
-Company "1" -- "0..n" Application : подаёт
+' History -[hidden,right]- Ident
+Person ||--o{ Ident : проходит
+Company ||--o{ Ident : проходит
+Company |o----o{ History : субъект
 
-Person "1" -[up]- "0..n" History : история
-Company "1" -[up]- "0..n" History : история
+' Product ||--o{ Application
+Application }o---[right]-|| Product
+Application }o--[up]-|| Rule
+History }o--[right]-|| Application : используется
+Person }o-[down]-o{ Application
+Company |o-[down]-o{ Application : подаёт
 
-Application -[right]- Product
+Application ||-[down]-|{ Decision : рассматривается
+' Decision -[hidden,right]- Staff
+Decision ||-[down]-o| Contract : порождает
+' Contract -[hidden,right]- Audit
+Staff ||-[down]-o{ Audit : выполняет
 
-Application "1" -- "1..n" Decision : рассматривается
-Decision -- Contract : порождает
+Contract ||--|{ Payment : график
+Contract ||--o{ Collateral : обеспечивается
+Contract ||--o{ Insurance : страхуется
+' Payment -[hidden,right]- Collateral
+' Collateral -[hidden,right]- Insurance
 
-Person -- Contract : поручительство
-
-Contract "1" -- "1..n" Payment : график
-Contract "1" -- "0..n" Collateral : обеспечивается
-Contract "1" -- "0..n" Insurance : страхуется
-
-Payment -[hidden,right]- Collateral
-Collateral -[hidden,right]- Insurance
+Person ||-[down]-o{ Surety
+Contract ||---[left]-o{ Surety
 
 legend
-Прямоугольник — сущность. Ромб — связь с собственными атрибутами.
-Подпись на линии — имя связи.
-Линия без подписи: заявка на один кредитный продукт.
+Синий — данные предметной области
+Красный — контроль обработки и хранения
+Ромб — связь с собственными данными
 endlegend
 
 @enduml
