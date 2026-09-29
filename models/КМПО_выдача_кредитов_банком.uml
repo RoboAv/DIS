@@ -153,10 +153,4 @@ Contract ||--o{ Insurance : страхуется
 Person ||-[down]-o{ Surety
 Contract ||---[left]-o{ Surety
 
-legend
-Синий — данные предметной области
-Красный — контроль обработки и хранения
-Ромб — связь с собственными данными
-endlegend
-
 @enduml
