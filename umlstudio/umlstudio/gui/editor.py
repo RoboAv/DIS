@@ -7,7 +7,28 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
 
-from ..theme import KIND_DEFAULTS
+from ..parser import (
+    CONN,
+    DECL,
+    GROUP_KW,
+    IDENT,
+    LINK_HEAD,
+    NOTE_AS,
+    NOTE_OF,
+    REL_HEAD,
+    REL_TAIL,
+    SHAPE_HEAD,
+    STRUCT_HEAD,
+    USE_CALL,
+)
+from ..theme import (
+    DECORATIONS,
+    FORMS,
+    KIND_ALIASES,
+    KIND_DEFAULTS,
+    LINK_ALIASES,
+    LINK_DEFAULTS,
+)
 from . import hotkeys, native, tooltip
 from .names import (
     continues_name,
@@ -31,8 +52,9 @@ DIRECTIVE_RE = re.compile(
     re.IGNORECASE,
 )
 KIND_RE = re.compile(
-    r"^\s*(?:" + "|".join(sorted(KIND_DEFAULTS, key=len, reverse=True)) +
-    r"|abstract\s+class)\b",
+    r"^\s*(?:abstract\s+class|"
+    + "|".join(sorted(KIND_DEFAULTS, key=len, reverse=True))
+    + r")\b",
     re.IGNORECASE,
 )
 _CROW_MARK = (
@@ -50,6 +72,46 @@ STEREO_RE = re.compile(r"<<[^>\n]*>>")
 PROPERTY_RE = re.compile(r"^\s*[\w\u0400-\u04FF-]+\s*:")
 VISIBILITY_RE = re.compile(r"^\s*(\{\s*\w+\s*\}\s*)*[-+#~]")
 _LINE_COMMENT_RE = re.compile(r"^([ \t]*)(?://|') ?")
+_NAME_EDGE = r"A-Za-z0-9_\u0400-\u04FF.:$"
+_KIND_WORDS = {name.lower() for name in (*KIND_DEFAULTS, *KIND_ALIASES)}
+_LINK_WORDS = {name.lower() for name in (*LINK_DEFAULTS, *LINK_ALIASES)}
+_WORD = re.compile(rf"[A-Za-z0-9_\u0400-\u04FF][{_NAME_EDGE}]*")
+_EXTENDS_BASE = re.compile(
+    rf"\bextends\s+(?P<base>[A-Za-z0-9_\u0400-\u04FF][{_NAME_EDGE}]*)",
+    re.IGNORECASE,
+)
+_SOLO = re.compile(rf"^\s*(?P<name>[A-Za-z0-9_\u0400-\u04FF][{_NAME_EDGE}]*)\s*$")
+_GROUP_RE = re.compile(
+    r"^\s*(?:"
+    + "|".join(re.escape(word) for word in sorted(GROUP_KW, key=len, reverse=True))
+    + rf")\s+(?P<a>{IDENT})(?:\s+as\s+(?P<b>{IDENT}))?",
+    re.IGNORECASE,
+)
+
+# Служебные слова в любом месте строки, не только в начале.
+# Если слово ещё и встроенный вид, на старте строки побеждает пометка kind.
+_KEYWORDS = (
+    *BLOCK_KEYWORDS,
+    "end", "endnote", "end legend", "skinparam",
+    "abstract", "static",
+    "hidden", "invisible", "скрытая",
+    "left", "right", "top", "bottom", "up", "down", "same",
+    "сверху", "снизу", "слева", "справа", "вверх", "вниз",
+    "on", "off", "true", "false", "yes", "no",
+    "да", "нет", "вкл", "выкл",
+    "solid", "dashed", "dotted", "bold",
+    "ortho", "straight",
+    "пакет", "группа", "заметка", "заголовок", "подпись",
+    "легенда", "тема", "направление", "опция", "конец",
+    *DECORATIONS,
+    *FORMS,
+)
+KEYWORD_RE = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(word) for word in sorted(set(_KEYWORDS), key=len, reverse=True))
+    + r")\b",
+    re.IGNORECASE,
+)
 
 
 def _is_comment_line(line: str) -> bool:
@@ -79,6 +141,155 @@ def _shifted_column(old: str, new: str, col: int) -> int:
     return max(indent, col + len(new) - len(old))
 
 
+def _split_comment(line: str) -> str:
+    """Код строки без хвостового комментария ``'`` или ``//``."""
+    quoted = False
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if ch == '"':
+            quoted = not quoted
+        elif not quoted:
+            if ch == "'":
+                return line[:i]
+            if ch == "/" and i + 1 < len(line) and line[i + 1] == "/":
+                return line[:i]
+        i += 1
+    return line
+
+
+def _comment_at(line: str) -> int | None:
+    code = _split_comment(line)
+    if len(code) < len(line):
+        return len(code)
+    return None
+
+
+def _names_re(names: set[str]) -> re.Pattern[str] | None:
+    clean = [name for name in names if name]
+    if not clean:
+        return None
+    body = "|".join(re.escape(name) for name in sorted(clean, key=len, reverse=True))
+    return re.compile(rf"(?<![{_NAME_EDGE}])(?:{body})(?![{_NAME_EDGE}])")
+
+
+def _is_type_name(kind: str, shapes: set[str]) -> bool:
+    raw = kind.strip()
+    return raw in shapes or raw.lower() in _KIND_WORDS
+
+
+def _declared_id(name_tok: str | None, alias_tok: str | None) -> str | None:
+    """Имя объекта: голый идентификатор, а не подпись в кавычках."""
+    if not name_tok:
+        return None
+    token = alias_tok if alias_tok and name_tok.startswith('"') else name_tok
+    if not token or token.startswith('"') or is_reserved(token):
+        return None
+    return token
+
+
+def _remember(bucket: set[str], token: str | None, skip: set[str]) -> None:
+    ident = _declared_id(token, None)
+    if ident and ident not in skip:
+        bucket.add(ident)
+
+
+def _relation_ends(text: str) -> tuple[str, str] | None:
+    head = REL_HEAD.match(text)
+    if not head:
+        return None
+    rest = text[head.end():]
+    conn = CONN.match(rest)
+    if not conn:
+        return None
+    if not ((conn.group("l1") or "") + (conn.group("l2") or "")):
+        return None
+    tail = REL_TAIL.match(rest[conn.end():])
+    if not tail:
+        return None
+    left, right = head.group("left"), tail.group("right")
+    if not left or not right:
+        return None
+    return left, right
+
+
+def _remember_def(bucket: set[str], token: str | None) -> None:
+    if token and not token.startswith('"'):
+        bucket.add(token)
+
+
+def _code_lines(text: str):
+    """Строки без комментариев: номер и код до хвостового ``'`` / ``//``."""
+    in_block = False
+    for index, line in enumerate(text.split("\n"), start=1):
+        if in_block:
+            if "'/" in line:
+                in_block = False
+            continue
+        if "/'" in line and "'/" not in line:
+            in_block = True
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("'") or stripped.startswith("//"):
+            continue
+        yield index, _split_comment(line)
+
+
+def _collect_symbols(text: str) -> tuple[set[str], set[str], set[str], set[str]]:
+    """Имена своих видов, связей, объектов и структур."""
+    shapes: set[str] = set()
+    links: set[str] = set()
+    structs: set[str] = set()
+    code_lines = list(_code_lines(text))
+    for _, code in code_lines:
+        shape = SHAPE_HEAD.match(code)
+        if shape:
+            _remember_def(shapes, shape.group("name"))
+            continue
+        link = LINK_HEAD.match(code)
+        if link:
+            _remember_def(links, link.group("name"))
+            continue
+        defined = STRUCT_HEAD.match(code)
+        if defined:
+            _remember_def(structs, defined.group("name"))
+
+    skip = shapes | links | structs
+    entities: set[str] = set()
+    for _, code in code_lines:
+        if SHAPE_HEAD.match(code) or LINK_HEAD.match(code) or STRUCT_HEAD.match(code):
+            continue
+        noted = NOTE_OF.match(code)
+        if noted:
+            _remember(entities, noted.group("target"), skip)
+            continue
+        noted = NOTE_AS.match(code)
+        if noted:
+            _remember(entities, noted.group("alias"), skip)
+            continue
+        group = _GROUP_RE.match(code)
+        if group:
+            ident = _declared_id(group.group("a"), group.group("b"))
+            if ident and ident not in skip:
+                entities.add(ident)
+            continue
+        ends = _relation_ends(code)
+        if ends:
+            _remember(entities, ends[0], skip)
+            _remember(entities, ends[1], skip)
+            continue
+        decl = DECL.match(code)
+        if decl and _is_type_name(decl.group("kind"), shapes):
+            ident = _declared_id(decl.group("name"), decl.group("alias"))
+            if ident and ident not in skip:
+                entities.add(ident)
+            continue
+        solo = _SOLO.match(code)
+        if solo:
+            _remember(entities, solo.group("name"), skip)
+    return shapes, links, entities, structs
+
+
 PALETTES = {
     "light": {
         "bg": "#ffffff", "fg": "#1f2a33", "caret": "#1565c0",
@@ -86,6 +297,7 @@ PALETTES = {
         "select": "#cfe3f7", "select_fg": "#10314f",
         "border": "#c6d0d8", "focus": "#1565c0",
         "comment": "#8a9aa6", "directive": "#8e24aa", "kind": "#1565c0",
+        "custom": "#00796b", "entity": "#c2185b",
         "string": "#2e7d32", "connector": "#c62828", "color": "#b8860b",
         "param": "#00838f", "stereo": "#6a4fa3", "prop": "#37474f",
         "vis": "#d98324", "error_bg": "#ffe3e3", "warn_bg": "#fff5d6",
@@ -97,6 +309,7 @@ PALETTES = {
         "select": "#2e4256", "select_fg": "#f2f7fb",
         "border": "#3a4650", "focus": "#6fb3f2",
         "comment": "#6c7a87", "directive": "#c792ea", "kind": "#6fb3f2",
+        "custom": "#1de9b6", "entity": "#ff80ab",
         "string": "#9fd28c", "connector": "#f28b82", "color": "#e0c179",
         "param": "#6fd8d3", "stereo": "#b39ddb", "prop": "#aebecb",
         "vis": "#f0b254", "error_bg": "#4a2226", "warn_bg": "#463a1c",
@@ -160,6 +373,8 @@ class CodeEditor(ttk.Frame):
         self.text.tag_configure("comment", foreground=c["comment"])
         self.text.tag_configure("directive", foreground=c["directive"])
         self.text.tag_configure("kind", foreground=c["kind"])
+        self.text.tag_configure("custom", foreground=c["custom"])
+        self.text.tag_configure("entity", foreground=c["entity"])
         self.text.tag_configure("string", foreground=c["string"])
         self.text.tag_configure("connector", foreground=c["connector"])
         self.text.tag_configure("color", foreground=c["color"])
@@ -173,7 +388,9 @@ class CodeEditor(ttk.Frame):
                                 foreground=c["find_fg"])
         self.text.tag_configure("find_current", background=c["find_cur"],
                                 foreground=c["find_fg"])
-        for name in ("comment", "directive", "kind", "string", "connector"):
+        for name in ("prop", "vis", "connector", "entity", "directive",
+                     "kind", "custom", "stereo", "color", "param",
+                     "string", "comment"):
             self.text.tag_raise(name)
         self.text.tag_lower("current_line")
         self.text.tag_lower("error_line")
@@ -392,10 +609,14 @@ class CodeEditor(ttk.Frame):
 
     def paint(self) -> None:
         self._pending_paint = None
-        for tag in ("comment", "directive", "kind", "string", "connector",
-                    "color", "param", "stereo", "prop", "vis"):
+        for tag in ("comment", "directive", "kind", "custom", "entity",
+                    "string", "connector", "color", "param", "stereo",
+                    "prop", "vis"):
             self.text.tag_remove(tag, "1.0", "end")
         source = self.get_text()
+        shapes, links, entities, structs = _collect_symbols(source)
+        custom_re = _names_re(shapes | links | structs)
+        entity_re = _names_re(entities)
         in_block = False
         for index, line in enumerate(source.split("\n"), start=1):
             if in_block:
@@ -411,18 +632,32 @@ class CodeEditor(ttk.Frame):
             if stripped.startswith("'") or stripped.startswith("//"):
                 self._tag(index, 0, len(line), "comment")
                 continue
-            self._paint_line(index, line)
+            self._paint_line(index, line, custom_re, entity_re, structs)
         self.text.tag_raise("find_hit")
         self.text.tag_raise("find_current")
         self._paint_gutter()
 
-    def _paint_line(self, index: int, line: str) -> None:
+    def _paint_line(
+        self,
+        index: int,
+        line: str,
+        custom_re: re.Pattern[str] | None,
+        entity_re: re.Pattern[str] | None,
+        structs: set[str],
+    ) -> None:
+        comment_at = _comment_at(line)
+        if comment_at is not None:
+            self._tag(index, comment_at, len(line), "comment")
         directive = DIRECTIVE_RE.match(line)
         if directive:
             self._tag(index, directive.start(1), directive.end(1), "directive")
         kind = KIND_RE.match(line)
         if kind:
             self._tag(index, kind.start(), kind.end(), "kind")
+        for match in _EXTENDS_BASE.finditer(line):
+            base = match.group("base")
+            if base.lower() in _KIND_WORDS or base.lower() in _LINK_WORDS:
+                self._tag(index, match.start("base"), match.end("base"), "kind")
         if PROPERTY_RE.match(line) and ":" in line:
             self._tag(index, 0, line.index(":"), "prop")
         vis = VISIBILITY_RE.match(line)
@@ -436,12 +671,45 @@ class CodeEditor(ttk.Frame):
             self._tag(index, match.start(), match.end(), "color")
         for match in PARAM_RE.finditer(line):
             self._tag(index, match.start(), match.end(), "param")
+        for match in KEYWORD_RE.finditer(line):
+            self._tag(index, match.start(), match.end(), "directive")
         for match in CONNECTOR_RE.finditer(line):
             if not match.group(2):
                 continue
             if line.strip().startswith(("'", "//")):
                 continue
             self._tag(index, match.start(), match.end(), "connector")
+            bracket = match.group(3)
+            if not bracket:
+                continue
+            origin = match.start(3) + 1
+            for word in _WORD.finditer(bracket[1:-1]):
+                if word.group().lower() in _LINK_WORDS:
+                    self._tag(index, origin + word.start(),
+                              origin + word.end(), "kind")
+        if custom_re is not None:
+            for match in custom_re.finditer(line):
+                self._tag(index, match.start(), match.end(), "custom")
+        if entity_re is not None:
+            for match in entity_re.finditer(line):
+                self._tag(index, match.start(), match.end(), "entity")
+        self._paint_struct_params(index, _split_comment(line), structs)
+
+    def _paint_struct_params(self, index: int, code: str, structs: set[str]) -> None:
+        """Параметры ``struct Имя(А, Б)`` и аргументы вызова структуры."""
+        defined = STRUCT_HEAD.match(code)
+        if defined:
+            self._tag_words(index, defined, "params", "param")
+            return
+        call = USE_CALL.match(code)
+        if call and call.group("name") in structs:
+            self._tag_words(index, call, "args", "param")
+
+    def _tag_words(self, index: int, match: re.Match[str], group: str, tag: str) -> None:
+        inner = match.group(group) or ""
+        origin = match.start(group)
+        for word in _WORD.finditer(inner):
+            self._tag(index, origin + word.start(), origin + word.end(), tag)
 
     def _tag(self, line: int, start: int, end: int, tag: str) -> None:
         if end <= start:
