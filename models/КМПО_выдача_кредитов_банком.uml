@@ -9,22 +9,24 @@ set font = Segoe UI
 set hide_empty = on
 set padding = 16
 set shadow = off
+ set edge_style = ortho
 
 shape сущность extends class {
   accent: #1565c0
 }
 
-shape связь {
+shape rel {
   form: diamond
   accent: #6a1b9a
 }
 
-shape контроль extends class {
+shape control extends class {
   accent: #b71c1c
 }
 
 сущность "Физическое лицо" as Person {
-  ФИО, паспорт
+  ФИО
+  паспорт
   ИНН, СНИЛС, доход
   адрес и телефон
 }
@@ -35,12 +37,12 @@ shape контроль extends class {
   адрес и выручка
 }
 
-связь Ben as "бенефициар" {
+rel Benefitiar as "Бенефициар" {
   доля
   основание контроля
 }
 
-контроль "Согласие" as Consent {
+control "Согласие" as Consent {
   цель и основание
   срок и способ
   дата отзыва
@@ -52,7 +54,7 @@ shape контроль extends class {
   самозапрет
 }
 
-контроль "Идентификация" as Ident {
+control "Идентификация" as Ident {
   дата и способ
   уровень риска
   статус и срок
@@ -70,19 +72,20 @@ shape контроль extends class {
   статус хранения
 }
 
-контроль "Правило хранения" as Rule {
+control "Правило хранения" as Rule {
   категория сведений
   основание и срок
   событие начала
 }
 
 сущность "Кредитное решение" as Decision {
-  результат и условия
+  результат
+  условия
   ПДН и способ
   причина отказа
 }
 
-контроль "Сотрудник" as Staff {
+control "Сотрудник" as Staff {
   роль
 }
 
@@ -92,13 +95,13 @@ shape контроль extends class {
   охлаждение, статус
 }
 
-контроль "Журнал доступа" as Audit {
+control "Журнал доступа" as Audit {
   действие и объект
   время и основание
   срок хранения
 }
 
-связь Surety as "поручительство" {
+rel "Поручительство" as Surety {
   дата
   предел ответственности
 }
@@ -119,18 +122,12 @@ shape контроль extends class {
   премия и срок
   признак добровольности
 }
-
-' Верхний ряд: согласие, история, заявка и продукт стоят рядом,
-' поэтому подписи не пересекают блоки заёмщиков.
-' Идентификация опущена ниже и не лежит на линиях заявки.
-' Сотрудник и журнал — отдельный столбец справа.
-
 Consent -[hidden,right]- History
 History -[hidden,right]- Application
 Application -[hidden,right]- Product
 
-Person -[hidden,right]- Ben
-Ben -[hidden,right]- Company
+Person -[hidden,right]- Benefitiar
+Benefitiar -[hidden,right]- Company
 Company -[hidden,right]- Decision
 
 Consent |o-[right]-o{ History : разрешает
@@ -142,15 +139,16 @@ Company |o-[up]-o{ History : субъект
 Person }o-[up]-o{ Application
 Company |o-[up]-o{ Application : подаёт
 
-Person ||-[right]-o{ Ben
-Ben }|-[right]-|| Company
+Person ||-[right]-o{ Benefitiar
+Benefitiar }|-[right]-|| Company
 
 Person ||-[down]-o{ Ident : проходит
 Company ||-[down]-o{ Ident : проходит
 
 Application ||-[down]-|{ Decision : рассматривается
 Rule ||-[up]-o{ Application
-Decision -[hidden,right]- Rule
+Decision -[hidden,left]- Rule
+Rule -[hidden,left]-Company
 
 Rule -[hidden]- Staff
 Staff ||-[down]-o{ Audit : выполняет
@@ -165,5 +163,11 @@ Person ||-[down]-o{ Surety
 Surety -[hidden,right]- Payment
 Payment -[hidden,right]- Collateral
 Collateral -[hidden,right]- Insurance
+
+legend
+Синий — данные предметной области
+Красный — контроль обработки и хранения
+Ромб — связь с собственными данными
+endlegend
 
 @enduml
