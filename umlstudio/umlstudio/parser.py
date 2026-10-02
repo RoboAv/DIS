@@ -877,6 +877,7 @@ class Parser:
         edge.kind = self._guess_kind(edge)
         if not attrs:
             return
+        faces: list[str] = []
         for token in _split_args(attrs):
             tok = token.strip()
             if not tok:
@@ -889,14 +890,22 @@ class Parser:
                 edge.line = low
             elif low in ("hidden", "invisible", "скрытая"):
                 edge.color = "hidden"
+            elif low in ("notowning", "notwoning"):
+                edge.notowning = True
             elif low in DIR_WORDS:
-                edge.direction = DIR_WORDS[low]
+                faces.append(DIR_WORDS[low])
             elif normalize_link(low) in LINK_DEFAULTS or tok in self.d.links:
                 self._apply_link_kind(edge, tok)
             elif kv:
                 self._apply_edge_kv(no, edge, kv.group("k").lower(), kv.group("v"))
             else:
                 self._warn(no, f"неизвестный параметр связи: {tok}")
+        if edge.notowning and faces:
+            edge.direction = faces[0]
+            if len(faces) > 1:
+                edge.arrive = faces[1]
+        elif faces:
+            edge.direction = faces[-1]
 
     def _apply_link_kind(self, edge: Edge, name: str) -> None:
         custom = self.d.links.get(name)
@@ -934,6 +943,10 @@ class Parser:
                 edge.line = value.lower()
         elif key in ("dir", "direction", "направление"):
             edge.direction = DIR_WORDS.get(value.lower(), "")
+        elif key in ("notowning", "notwoning"):
+            edge.notowning = _as_bool(value)
+        elif key in ("arrive", "to", "вход"):
+            edge.arrive = DIR_WORDS.get(value.lower(), "")
         else:
             self._warn(no, f"неизвестный параметр связи: {key}")
 

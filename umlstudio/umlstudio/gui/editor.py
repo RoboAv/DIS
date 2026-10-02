@@ -94,7 +94,7 @@ _KEYWORDS = (
     *BLOCK_KEYWORDS,
     "end", "endnote", "end legend", "skinparam",
     "abstract", "static",
-    "hidden", "invisible", "скрытая",
+    "hidden", "invisible", "скрытая", "notowning", "notwoning",
     "left", "right", "top", "bottom", "up", "down", "same",
     "сверху", "снизу", "слева", "справа", "вверх", "вниз",
     "on", "off", "true", "false", "yes", "no",
