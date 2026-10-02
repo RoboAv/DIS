@@ -18,7 +18,8 @@ _EXTRA = {
     "frame", "rectangle", "note", "end", "endlegend", "legend", "title",
     "caption", "footer", "set", "theme", "direction", "hide", "as",
     "extends", "of", "abstract", "static", "class", "interface", "enum",
-    "solid", "dashed", "dotted", "bold", "hidden", "invisible",
+    "solid", "dashed", "dotted", "bold", "hidden", "invisible", "notowning",
+    "notwoning",
     "up", "down", "left", "right", "top", "bottom", "same",
     "on", "off", "true", "false", "yes", "no", "endnote",
 }

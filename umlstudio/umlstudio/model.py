@@ -87,7 +87,9 @@ class Edge:
     line: str = "solid"       # solid | dashed | dotted | bold
     color: str | None = None
     width: float | None = None
-    direction: str = ""       # '', 'up', 'down', 'same', 'left', 'right'
+    direction: str = ""       # грань выхода: '', 'up', 'down', 'same', 'left', 'right'
+    arrive: str = ""          # грань входа для notowning; пусто — ближайшая, кроме нижней
+    notowning: bool = False   # линия есть, на раскладку блоков не влияет
     min_span: int = 1         # минимум уровней: 1 для «--», дальше по символу линии
     src_line: int = 0
 

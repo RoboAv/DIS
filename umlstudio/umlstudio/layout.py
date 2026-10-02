@@ -903,7 +903,7 @@ def layout_diagram(diagram: Diagram, style: StyleResolver) -> None:
         keys = {it.key for it in items}
         links: list[_Link] = []
         for edge in diagram.edges:
-            if id(edge) in handled:
+            if edge.notowning or id(edge) in handled:
                 continue
             a = item_key(level, edge.a)
             b = item_key(level, edge.b)
@@ -930,6 +930,8 @@ def layout_diagram(diagram: Diagram, style: StyleResolver) -> None:
 
     _route_lifted(diagram, level_links, opts, style)
     _route_self_loops(diagram, opts, style)
+    _route_notowning(diagram, opts, style)
+    _fit_outside(diagram, opts.padding, origin[1])
     attach_shape_ends(diagram, style)
     _place_labels(diagram, style, opts)
 
@@ -1106,11 +1108,166 @@ def _direct_route(a, b, opts: LayoutOptions, style: StyleResolver
     return points if top is a else list(reversed(points))
 
 
+_EXIT_SIDES = ("left", "right", "up", "down")
+
+
+def _route_notowning(diagram: Diagram, opts: LayoutOptions,
+                     style: StyleResolver) -> None:
+    """Рисует связи ``notowning`` после раскладки, не сдвигая блоки.
+
+    Первое направление в скобках — грань выхода, второе — грань входа.
+    Если вход не задан, линия приходит с ближайшей грани, кроме нижней.
+    """
+    edges = [edge for edge in diagram.edges if edge.notowning]
+    exits: dict[tuple[str, str], list[Edge]] = defaultdict(list)
+    entries: dict[tuple[str, str], list[Edge]] = defaultdict(list)
+    chosen: dict[int, tuple[str, str]] = {}
+    for edge in edges:
+        source = diagram.nodes.get(edge.a)
+        target = diagram.nodes.get(edge.b)
+        if source is None or target is None:
+            edge.points = []
+            continue
+        if edge.a == edge.b:
+            continue
+        exit_side = edge.direction if edge.direction in _EXIT_SIDES \
+            else _nearest_side(source, (target.cx, target.cy), skip_bottom=False)
+        approach = _outside(
+            _face_point(source, exit_side, 0, 1), exit_side, style.px(16),
+        )
+        if edge.arrive in _EXIT_SIDES:
+            entry_side = edge.arrive
+        else:
+            entry_side = _nearest_side(target, approach, skip_bottom=True)
+        chosen[id(edge)] = (exit_side, entry_side)
+        exits[(edge.a, exit_side)].append(edge)
+        entries[(edge.b, entry_side)].append(edge)
+    exit_slot = _face_slots(exits)
+    entry_slot = _face_slots(entries)
+    loops: dict[tuple[str, str], int] = defaultdict(int)
+
+    for edge in edges:
+        source = diagram.nodes.get(edge.a)
+        target = diagram.nodes.get(edge.b)
+        if source is None or target is None:
+            continue
+        if source is target:
+            used = edge.direction if edge.direction in _EXIT_SIDES else "right"
+            index = loops[(edge.a, used)]
+            loops[(edge.a, used)] += 1
+            edge.points = _notowning_loop(source, used, index, style, opts, edge)
+            continue
+        exit_side, entry_side = chosen[id(edge)]
+        edge.points = _notowning_between(
+            source, target, exit_side, entry_side,
+            exit_slot[id(edge)], entry_slot[id(edge)], style, opts, edge,
+        )
+
+
+def _face_slots(groups: dict[tuple[str, str], list[Edge]]) -> dict[int, tuple[int, int]]:
+    slots: dict[int, tuple[int, int]] = {}
+    for group in groups.values():
+        group.sort(key=lambda edge: (edge.src_line, edge.a, edge.b))
+        count = len(group)
+        for index, edge in enumerate(group):
+            slots[id(edge)] = (index, count)
+    return slots
+
+
+def _face_point(node, side: str, slot: int, count: int) -> tuple[float, float]:
+    fraction = 0.5 if count <= 1 else 0.18 + 0.64 * (slot + 0.5) / count
+    if side == "left":
+        return (node.x, node.y + node.h * fraction)
+    if side == "right":
+        return (node.x + node.w, node.y + node.h * fraction)
+    if side == "up":
+        return (node.x + node.w * fraction, node.y)
+    return (node.x + node.w * fraction, node.y + node.h)
+
+
+def _outside(point: tuple[float, float], side: str, distance: float
+             ) -> tuple[float, float]:
+    x, y = point
+    if side == "left":
+        return (x - distance, y)
+    if side == "right":
+        return (x + distance, y)
+    if side == "up":
+        return (x, y - distance)
+    return (x, y + distance)
+
+
+_SIDE_ORDER = {"left": 0, "right": 1, "up": 2, "down": 3}
+
+
+def _dist_to_side(node, point: tuple[float, float], side: str) -> float:
+    """Расстояние от точки до отрезка грани."""
+    px, py = point
+    if side in ("left", "right"):
+        x = node.x if side == "left" else node.x + node.w
+        y0, y1 = node.y, node.y + node.h
+        if y0 <= py <= y1:
+            return abs(px - x)
+        return math.hypot(px - x, py - (y0 if py < y0 else y1))
+    y = node.y if side == "up" else node.y + node.h
+    x0, x1 = node.x, node.x + node.w
+    if x0 <= px <= x1:
+        return abs(py - y)
+    return math.hypot(px - (x0 if px < x0 else x1), py - y)
+
+
+def _nearest_side(node, point: tuple[float, float], skip_bottom: bool) -> str:
+    """Ближайшая грань. Для входа в цель нижняя грань пропускается."""
+    ranked = sorted(
+        _EXIT_SIDES,
+        key=lambda side: (_dist_to_side(node, point, side), _SIDE_ORDER[side]),
+    )
+    if skip_bottom and ranked[0] == "down":
+        return ranked[1]
+    return ranked[0]
+
+
+def _notowning_between(source, target, exit_side: str, entry_side: str,
+                       leave: tuple[int, int], arrive: tuple[int, int],
+                       style: StyleResolver, opts: LayoutOptions, edge: Edge
+                       ) -> list[tuple[float, float]]:
+    stub = style.px(16) + max(0, _min_span(edge) - 1) * opts.rank_sep * 0.35
+    start = _face_point(source, exit_side, leave[0], leave[1])
+    end = _face_point(target, entry_side, arrive[0], arrive[1])
+    out = _outside(start, exit_side, stub)
+    inn = _outside(end, entry_side, stub)
+    if entry_side in ("left", "right"):
+        corner = (out[0], inn[1])
+    else:
+        corner = (inn[0], out[1])
+    return _dedup_points([start, out, corner, inn, end], 0.4)
+
+
+def _notowning_loop(node, side: str, index: int, style: StyleResolver,
+                    opts: LayoutOptions, edge: Edge
+                    ) -> list[tuple[float, float]]:
+    reach = style.px(26) + index * style.px(14)
+    reach += max(0, _min_span(edge) - 1) * opts.rank_sep
+    if side in ("left", "right"):
+        x = node.x if side == "left" else node.x + node.w
+        sign = -1 if side == "left" else 1
+        outer = x + sign * reach
+        y1 = node.y + node.h * 0.28
+        y2 = node.y + node.h * 0.72
+        return [(x, y1), (outer, y1), (outer, y2), (x, y2)]
+    y = node.y if side == "up" else node.y + node.h
+    sign = -1 if side == "up" else 1
+    outer = y + sign * reach
+    x1 = node.x + node.w * 0.28
+    x2 = node.x + node.w * 0.72
+    return [(x1, y), (x1, outer), (x2, outer), (x2, y)]
+
+
 def _route_self_loops(diagram: Diagram, opts: LayoutOptions,
                       style: StyleResolver) -> None:
     counters: dict[str, int] = defaultdict(int)
     for edge in diagram.edges:
-        if edge.a != edge.b or edge.points:
+        if edge.notowning or edge.a != edge.b or edge.points:
             continue
         node = diagram.nodes.get(edge.a)
         if node is None:
@@ -1182,15 +1339,35 @@ def _reserve(diagram: Diagram, style: StyleResolver) -> dict[str, float]:
     return {"top": top, "bottom": bottom, "width": width}
 
 
-def _shift_all(diagram: Diagram, dx: float) -> None:
+def _shift_all(diagram: Diagram, dx: float, dy: float = 0.0) -> None:
     for node in diagram.nodes.values():
         node.x += dx
+        node.y += dy
     for group in diagram.groups.values():
         group.x += dx
+        group.y += dy
     for edge in diagram.edges:
-        edge.points = [(px + dx, py) for px, py in edge.points]
+        edge.points = [(px + dx, py + dy) for px, py in edge.points]
         if edge.label_pos:
-            edge.label_pos = (edge.label_pos[0] + dx, edge.label_pos[1])
+            edge.label_pos = (edge.label_pos[0] + dx, edge.label_pos[1] + dy)
+
+
+def _fit_outside(diagram: Diagram, min_x: float, min_y: float) -> None:
+    """Сдвигает картинку, если линия ``notowning`` вышла левее или выше поля."""
+    xs: list[float] = []
+    ys: list[float] = []
+    for edge in diagram.edges:
+        if not edge.notowning:
+            continue
+        for px, py in edge.points:
+            xs.append(px)
+            ys.append(py)
+    if not xs:
+        return
+    dx = max(0.0, min_x - min(xs))
+    dy = max(0.0, min_y - min(ys))
+    if dx or dy:
+        _shift_all(diagram, dx, dy)
 
 
 def attach_shape_ends(diagram: Diagram, style: StyleResolver) -> None:

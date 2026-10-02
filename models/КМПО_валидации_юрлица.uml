@@ -1,0 +1,49 @@
+@startuml
+title КМПО валидации
+
+shape relation {
+  form: diamond
+}
+
+class company {
+  
+}
+
+class request {
+  
+}
+
+class verdict {
+  
+}
+
+class finances {
+  
+}
+
+class holdings {
+  
+}
+
+relation related {
+  share
+}
+
+company -[bottom]- request
+company -[right]- related
+
+company -- finances
+company -- holdings
+
+
+related -[right]- person
+
+request -[bottom]- verdict
+
+' request -[hidden, left]- finances
+' request -[hidden, right]- holdings
+' verdict -[hidden, left]- holdings
+' verdict -[hidden, right]- finances
+' verdict -[hidden, right]- holdings
+
+@enduml
