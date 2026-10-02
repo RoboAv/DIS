@@ -84,21 +84,10 @@ control "Правило хранения" as Rule {
   ПДН и способ
   причина отказа
 }
-
-control "Сотрудник" as Staff {
-  роль
-}
-
 сущность "Кредитный договор" as Contract {
   сумма, ставка, ПСК
   счёт и подписание
   охлаждение, статус
-}
-
-control "Журнал доступа" as Audit {
-  действие и объект
-  время и основание
-  срок хранения
 }
 
 rel "Поручительство" as Surety {
@@ -150,8 +139,7 @@ Rule ||-[up]-o{ Application
 Decision -[hidden,left]- Rule
 Rule -[hidden,left]-Company
 
-Rule -[hidden]- Staff
-Staff ||-[down]-o{ Audit : выполняет
+
 Decision ||-[down]-o| Contract : порождает
 
 Contract ||--|{ Payment : график

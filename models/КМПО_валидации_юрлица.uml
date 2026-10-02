@@ -1,49 +1,109 @@
 @startuml
-title КМПО валидации
 
-shape relation {
+set theme = light
+set direction = TB
+set rank_sep = 52
+set node_sep = 72
+set font_size = 13
+set font = Segoe UI
+set hide_empty = on
+set padding = 16
+set shadow = off
+set edge_style = ortho
+
+shape сущность extends class {
+  accent: #1565c0
+}
+
+shape rel {
   form: diamond
+  accent: #6a1b9a
 }
 
-class company {
-  
+shape control extends class {
+  accent: #b71c1c
 }
 
-class request {
-  
+сущность "Физическое лицо" as Person {
+  ФИО
+  паспорт
+  ИНН, СНИЛС
 }
 
-class verdict {
-  
+rel Related as "Участие" {
+  доля
+  вид связи
+  основание
 }
 
-class finances {
-  
+сущность "Юридическое лицо" as Company {
+  наименование
+  ИНН, ОГРН, КПП
+  статус и адрес
 }
 
-class holdings {
-  
+сущность "Положительный фактор" as Plus {
+  вид
+  источник и дата
+  значение
 }
 
-relation related {
-  share
+сущность "Отрицательный фактор" as Minus {
+  вид
+  источник и дата
+  критичность
 }
 
-company -[bottom]- request
-company -[right]- related
+сущность "Заявка" as Request {
+  номер и дата
+  канал, статус
+  цель проверки
+}
 
-company -- finances
-company -- holdings
+control "Правило хранения" as Rule {
+  категория сведений
+  основание и срок
+  событие начала
+}
 
+сущность "Заключение" as Verdict {
+  результат
+  уровень риска
+  срок действия
+  причина отказа
+}
 
-related -[right]- person
+сущность "Кредитные условия" as Terms {
+  продукт и валюта
+  лимиты и срок
+  обеспечение
+}
 
-request -[bottom]- verdict
+Related -[left]-o{ Person : включает
+Related -[right]-|{ Company : в организации
+Related -[notowning, up]-o Company
+Company ||-[right]-o{ Request : подаёт
+Request }o-[right]-|| Terms : на условиях
 
-' request -[hidden, left]- finances
-' request -[hidden, right]- holdings
-' verdict -[hidden, left]- holdings
-' verdict -[hidden, right]- finances
-' verdict -[hidden, right]- holdings
+Company ||-[down]-|{ Plus : в пользу
+Company ||-[down]-|{ Minus : против
+Rule ||-[up]-o{ Request : охватывает
+Request ||-[down]-o{ Verdict : рассматривается
+
+' Нужно для отображения, не являются значащими
+Person -[hidden,right]- Related
+Related -[hidden,right]- Company
+Company -[hidden,right]- Request
+Request -[hidden,right]- Terms
+
+Plus -[hidden,right]- Minus
+Minus -[hidden,right]- Rule
+Rule -[hidden,right]- Verdict
+
+legend
+Синий — данные предметной области
+Красный — контроль обработки и хранения
+Ромб — связь с собственными данными
+endlegend
 
 @enduml
