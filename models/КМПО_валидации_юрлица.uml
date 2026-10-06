@@ -2,12 +2,12 @@
 
 set theme = light
 set direction = TB
-set rank_sep = 52
-set node_sep = 72
-set font_size = 13
+set rank_sep = 88
+set node_sep = 100
+set font_size = 16
 set font = Segoe UI
 set hide_empty = on
-set padding = 16
+set padding = 48
 set shadow = off
 set edge_style = ortho
 
@@ -26,84 +26,155 @@ shape control extends class {
 
 сущность "Физическое лицо" as Person {
   ФИО
-  паспорт
-  ИНН, СНИЛС
+  паспорт и дата рождения
+  гражданство и адрес
 }
 
-rel Related as "Участие" {
+rel Part as "Участие" {
   доля
   вид связи
   основание
 }
 
 сущность "Юридическое лицо" as Company {
-  наименование
-  ИНН, ОГРН, КПП
-  статус и адрес
+  наименование и ОПФ
+  ИНН, ОГРН и ОКВЭД
+  статус, адрес, лицензия
 }
 
-сущность "Положительный фактор" as Plus {
-  вид
-  источник и дата
-  значение
+rel Hold as "Владение" {
+  доля
+  основание
 }
 
-сущность "Отрицательный фактор" as Minus {
-  вид
+control "Согласие" as Consent {
+  цель обработки
+  основание
+  срок действия
+}
+
+сущность "Обязательная проверка" as Check {
+  вид и норма
+  результат проверки
   источник и дата
-  критичность
+}
+
+сущность "Финансовая отчётность" as Report {
+  форма и период
+  валюта отчёта
+  дата составления
+}
+
+сущность "Показатель" as Fact {
+  вид и период
+  значение показателя
+  источник и дата
+}
+
+rel Used as "Учтено" {
+  вес
+  порог
+  вывод
 }
 
 сущность "Заявка" as Request {
-  номер и дата
-  канал, статус
-  цель проверки
-}
-
-control "Правило хранения" as Rule {
-  категория сведений
-  основание и срок
-  событие начала
-}
-
-сущность "Заключение" as Verdict {
-  результат
-  уровень риска
-  срок действия
-  причина отказа
+  номер, дата и канал
+  сумма, срок и валюта
+  статус и цель проверки
 }
 
 сущность "Кредитные условия" as Terms {
   продукт и валюта
   лимиты и срок
-  обеспечение
+  требование обеспечения
 }
 
-Related -[left]-o{ Person : включает
-Related -[right]-|{ Company : в организации
-Related -[notowning, up]-o Company
-Company ||-[right]-o{ Request : подаёт
-Request }o-[right]-|| Terms : на условиях
+сущность "Корпоративное одобрение" as Approval {
+  орган и дата решения
+  вид сделки
+  одобренная сумма
+}
 
-Company ||-[down]-|{ Plus : в пользу
-Company ||-[down]-|{ Minus : против
-Rule ||-[up]-o{ Request : охватывает
+сущность "Обеспечение" as Pledge {
+  вид и предмет залога
+  оценка стоимости
+  действующее обременение
+}
+
+сущность "Заключение" as Verdict {
+  результат проверки
+  уровень риска
+  срок действия
+  причина отказа
+}
+
+control "Правило хранения" as Rule {
+  категория сведений
+  основание и срок
+  событие начала отсчёта
+}
+
+Person ||-[right]-o{ Part : участвует
+Part }o-[right]-|| Company : в организации
+Company ||-[right]-o{ Hold : владеет
+Hold }o--[notowning, up, up]-|| Company : объект
+
+Person ||-[down]-o{ Consent : даёт
+Company ||-[down]-o{ Consent : даёт
+Consent |o--[right]-o{ Check : допускает
+Part |o-[down]-o{ Check : по лицу
+
+' Check -[hidden, left]- Report
+
+Company ||-[down]-o{ Report : ведёт
+Report |o--[down]-o{ Fact : содержит
+' Company ||-----[notowning, down, up]-o{ Fact : имеет
+Fact ||-[right]-o{ Used : входит
+Used }o-[right]-|| Request : в заявке
+
+Company ||-[down]-o{ Request : подаёт
+' Request }o----[notowning, up, right]-o{ Company : поручитель
+Request }o-[right]-|| Terms : на условиях
+Check -[hidden,down]- Request
+Check }|---[notowning, down, up]-|| Request : проходит
+
+' Request -[hidden,down]- Approval
+Request ||---[notowning, down, up]-o{ Approval : одобрена
+Request ||--[down]-o{ Pledge : предлагает
+' Pledge }o--[notowning, right, up]-o| Company : собственник
 Request ||-[down]-o{ Verdict : рассматривается
 
-' Нужно для отображения, не являются значащими
-Person -[hidden,right]- Related
-Related -[hidden,right]- Company
-Company -[hidden,right]- Request
+' Rule ||-----[notowning, left, left]-o{ Person : клиент
+' Rule ||---[notowning, up, down]-o{ Company : клиент
+' Rule ||--[up]-o{ Fact : показатель
+' Rule -[hidden,up]- Request
+' Rule -[hidden,up]- Terms
+' Rule ||-[notowning, up, down]-o{ Request : пакет
+' Rule ||---[notowning, up, down]-o{ Terms : условия
+
+Person -[hidden,right]- Part
+Part -[hidden,right]- Company
+
+Consent -[hidden,right]- Check
+Check -[hidden,right]- Report
+' Report -[hidden,right]- Hold
+
+Fact -[hidden,right]- Used
+Used -[hidden,right]- Request
 Request -[hidden,right]- Terms
 
-Plus -[hidden,right]- Minus
-Minus -[hidden,right]- Rule
-Rule -[hidden,right]- Verdict
+' Rule -[hidden,right]- Approval
+Approval -[hidden,right]- Pledge
+Pledge -[hidden,right]- Verdict
 
 legend
 Синий — данные предметной области
 Красный — контроль обработки и хранения
 Ромб — связь с собственными данными
+Хранение «клиент» — физическое и юридическое лицо; участие и владение хранятся вместе с ними
+Хранение «показатель» — показатель и финансовая отчётность
+Хранение «пакет» — заявка, проверка, учтено, одобрение, обеспечение и заключение
+Хранение «условия» — кредитные условия
 endlegend
 
 @enduml

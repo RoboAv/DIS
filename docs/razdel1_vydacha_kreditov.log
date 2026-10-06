@@ -1,4 +1,4 @@
-This is XeTeX, Version 3.141592653-2.6-0.999996 (MiKTeX 24.4) (preloaded format=xelatex 2025.12.10)  29 SEP 2026 18:39
+This is XeTeX, Version 3.141592653-2.6-0.999996 (MiKTeX 24.4) (preloaded format=xelatex 2025.12.10)  3 OCT 2026 15:19
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -670,79 +670,53 @@ LaTeX Font Info:    External font `cmex7' loaded for size
 [1]
 
 [2]
-Underfull \hbox (badness 1939) in paragraph at lines 114--115
-\TU/TimesNewRoman(1)/m/n/14.4 вилам независимо от того, пришла заявка из мобиль
-ного приложения,
+Underfull \hbox (badness 1168) in paragraph at lines 136--137
+[]\TU/TimesNewRoman(1)/m/n/14.4 Кредитное решение. Массовый кредит и карта закр
+ывает скоринг,
  []
 
 
-Underfull \hbox (badness 2689) in paragraph at lines 114--115
-\TU/TimesNewRoman(1)/m/n/14.4 значимая часть ипотеки и кредитов юридическим лиц
-ам по-прежнему
+Underfull \hbox (badness 1173) in paragraph at lines 136--137
+\TU/TimesNewRoman(1)/m/n/14.4 крупная сумма, расхождение данных и залог — андер
+райтер. Хранятся
+ []
+
+
+Underfull \hbox (badness 4467) in paragraph at lines 136--137
+\TU/TimesNewRoman(1)/m/n/14.4 результат, одобренные условия, показатель долгово
+й нагрузки, способ
  []
 
 
 
 [3]
+File: figures/kmpo.png Graphic file (type bmp)
+<figures/kmpo.png>
+
+Underfull \hbox (badness 10000) in paragraph at lines 163--164
+[]\TU/TimesNewRoman(1)/m/n/14.4 Юридическое лицо. Заёмщик-организация: наименов
+ание, ИНН,
+ []
+
+
+Underfull \hbox (badness 1097) in paragraph at lines 167--168
+[]\TU/TimesNewRoman(1)/m/n/14.4 Кредитный продукт. Кредит наличными, карта, реф
+инансирование,
+ []
+
+
 
 [4]
 
 [5]
-File: figures/kmpo.png Graphic file (type bmp)
-<figures/kmpo.png>
-
 
 [6]
 
 [7]
-Underfull \hbox (badness 1264) in paragraph at lines 187--188
-[]\TU/TimesNewRoman(1)/m/n/14.4 Поручительство. Связь физического лица с кредит
-ным договором.
- []
-
-
 
 [8]
-Underfull \hbox (badness 1275) in paragraph at lines 213--214
-\TU/TimesNewRoman(1)/m/n/14.4 бюро хранит саму историю у себя, определяется зак
-оном о кредитных
- []
 
-
-
-[9]
-
-[10]
-Underfull \hbox (badness 2809) in paragraph at lines 259--260
-\TU/TimesNewRoman(1)/m/n/14.4 Диаграмма описывается текстом, раскладывается и р
-исуется локально,
- []
-
-
-Underfull \hbox (badness 1655) in paragraph at lines 259--260
-\TU/TimesNewRoman(1)/m/n/14.4 без Graphviz и без сетевого сервиса. Исходный тек
-ст модели — файл
- []
-
-
-Underfull \hbox (badness 3019) in paragraph at lines 259--260
-\TU/CourierNew(1)/m/n/14.4 models/КМПО_выдача_кредитов_банком.uml\TU/TimesNewRo
-man(1)/m/n/14.4 . В нём сущности и
- []
-
-
-
-[11]
-Underfull \hbox (badness 1354) in paragraph at lines 263--264
-\TU/TimesNewRoman(1)/m/n/14.4 а ограничения продукта и статуса — ограничениями 
-целостности. Для
- []
-
-
-
-[12]
-
-[13] (razdel1_vydacha_kreditov.aux)
+[9] (razdel1_vydacha_kreditov.aux)
  ***********
 LaTeX2e <2024-11-01> patch level 1
 L3 programming layer <2024-11-02>
@@ -752,12 +726,12 @@ d.
 (rerunfilecheck)             Checksum: 8971779F9155B87E20E612084751F814;2954.
  ) 
 Here is how much of TeX's memory you used:
- 15437 strings out of 408758
- 305351 string characters out of 5747237
- 767351 words of memory out of 5000000
- 38188 multiletter control sequences out of 15000+600000
- 560105 words of font info for 81 fonts, out of 8000000 for 9000
+ 15435 strings out of 408758
+ 305285 string characters out of 5747237
+ 765351 words of memory out of 5000000
+ 38187 multiletter control sequences out of 15000+600000
+ 560097 words of font info for 80 fonts, out of 8000000 for 9000
  1348 hyphenation exceptions out of 8191
- 79i,6n,93p,1082b,493s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 79i,6n,93p,629b,493s stack positions out of 10000i,1000n,20000p,200000b,200000s
 
-Output written on razdel1_vydacha_kreditov.pdf (14 pages).
+Output written on razdel1_vydacha_kreditov.pdf (10 pages).
