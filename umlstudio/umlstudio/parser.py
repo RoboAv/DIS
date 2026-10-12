@@ -152,6 +152,63 @@ def _as_bool(value: str, default: bool = True) -> bool:
     return default
 
 
+def split_comments(line: str, in_block: bool = False
+                  ) -> tuple[str, bool, list[tuple[int, int]]]:
+    """Убирает комментарии, не сдвигая остальной текст строки.
+
+    ``'`` и ``//`` закрывают строку, ``/' ... '/`` — блок. Текст в двойных
+    кавычках не режется. Комментарии заменяются пробелами, поэтому код до
+    них остаётся на своих местах.
+    """
+    spans, in_block = _comment_spans(line, in_block)
+    if not spans:
+        return line, in_block, spans
+    chars = list(line)
+    for start, end in spans:
+        for index in range(start, min(end, len(chars))):
+            chars[index] = " "
+    return "".join(chars), in_block, spans
+
+
+def _comment_spans(line: str, in_block: bool) -> tuple[list[tuple[int, int]], bool]:
+    spans: list[tuple[int, int]] = []
+    length = len(line)
+    index = 0
+    if in_block:
+        end = line.find("'/")
+        if end < 0:
+            if length:
+                spans.append((0, length))
+            return spans, True
+        spans.append((0, end + 2))
+        index = end + 2
+    quoted = False
+    while index < length:
+        ch = line[index]
+        if quoted:
+            if ch == '"':
+                quoted = False
+            index += 1
+            continue
+        if ch == '"':
+            quoted = True
+            index += 1
+            continue
+        if line.startswith("/'", index):
+            end = line.find("'/", index + 2)
+            if end < 0:
+                spans.append((index, length))
+                return spans, True
+            spans.append((index, end + 2))
+            index = end + 2
+            continue
+        if ch == "'" or line.startswith("//", index):
+            spans.append((index, length))
+            break
+        index += 1
+    return spans, False
+
+
 def _split_args(text: str) -> list[str]:
     """Делит список аргументов по запятым, не трогая запятые внутри кавычек."""
     out, buf, quoted = [], [], False
@@ -204,26 +261,9 @@ class Parser:
         out: list[tuple[int, str]] = []
         in_block = False
         for no, raw in enumerate(text.splitlines(), start=1):
-            line = raw.rstrip()
-            if in_block:
-                end = line.find("'/")
-                if end < 0:
-                    continue
-                line = line[end + 2:]
-                in_block = False
-            start = line.find("/'")
-            while start >= 0:
-                end = line.find("'/", start + 2)
-                if end < 0:
-                    line = line[:start]
-                    in_block = True
-                    break
-                line = line[:start] + " " + line[end + 2:]
-                start = line.find("/'")
+            line, in_block, _spans = split_comments(raw.rstrip(), in_block)
             stripped = line.strip()
             if not stripped:
-                continue
-            if stripped.startswith("'") or stripped.startswith("//"):
                 continue
             if stripped.startswith("@"):
                 head = stripped[1:].strip()
@@ -657,6 +697,11 @@ class Parser:
         if name in self.d.groups:
             self._group_seq += 1
             name = f"{name}__{self._group_seq}"
+        # Связь, записанная раньше пакета, успевает завести пустой объект
+        # с тем же именем. Пакет забирает имя себе.
+        stub = self.d.nodes.get(name)
+        if stub is not None and stub.style.get("_implicit"):
+            del self.d.nodes[name]
         kind = "package" if kind in ("пакет", "группа") else kind
         self.d.groups[name] = Group(
             name=name, label=label or name, kind=kind, parent=parent,
@@ -724,6 +769,7 @@ class Parser:
             self.d.nodes[name] = node
         else:
             node.kind = kind
+            node.style.pop("_implicit", None)
         if label:
             node.label = label
         if stereotype:
@@ -845,12 +891,14 @@ class Parser:
     def _add_relation(self, no: int, rel: dict, group: str | None) -> None:
         for key in ("left", "right"):
             name = rel[key]
-            if name not in self.d.nodes:
-                node = self.d.ensure_node(
-                    name, normalize_kind(self.d.opt("default_kind", "class")), no
-                )
-                if group and node.group is None:
-                    node.group = group
+            if name in self.d.groups or name in self.d.nodes:
+                continue
+            node = self.d.ensure_node(
+                name, normalize_kind(self.d.opt("default_kind", "class")), no
+            )
+            node.style["_implicit"] = True
+            if group and node.group is None:
+                node.group = group
 
         line_char = (rel["l1"] + rel["l2"]).strip()
         style = LINE_SYMBOLS.get(line_char[0] if line_char else "-", "solid")
@@ -1073,8 +1121,9 @@ class Parser:
     # ----------------------------------------------------------- финал ---
 
     def _finish(self) -> None:
+        known = set(self.d.nodes) | set(self.d.groups)
         for edge in list(self.d.edges):
-            if edge.a not in self.d.nodes or edge.b not in self.d.nodes:
+            if edge.a not in known or edge.b not in known:
                 self.d.edges.remove(edge)
                 self._warn(edge.src_line, "связь ссылается на неизвестный объект")
         if self.d.opt("hide_empty"):
