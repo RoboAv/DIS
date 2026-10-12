@@ -1,4 +1,4 @@
-\xpg@aux {}{russian}
+\xpg@aux {forceheadingpunctuation=false}{russian}
 \contentsline {section}{\numberline {1}Обзор системы}{2}{section.1}%
 \contentsline {subsection}{\numberline {1.1}Формулировка задания}{2}{subsection.1.1}%
 \contentsline {subsection}{\numberline {1.2}Назначение и цели создания системы}{2}{subsection.1.2}%

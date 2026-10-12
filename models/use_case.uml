@@ -47,15 +47,31 @@ link extend {
   line: dashed
   head: arrow_filled
   tail: none
-  color: #00FFFF
+  color: #008080
   label: <<extend>>
 }
 
-client -- application_service
-employee -- application_service
-employee -- check_service
-admin -- admin_service
-externals -- check_service
+link yellow {
+  color: #BDB76B
+}
+
+link red {
+  color: #FF0000
+}
+
+link orange {
+  color: #FF8C00
+}
+
+link green {
+  color: #006400
+}
+
+client -[yellow]- application_service
+employee -[red]- application_service
+employee -[red]- check_service
+admin -[green]- admin_service
+externals -[orange]- check_service
 
 submit_data -[extend]-> manage_application
 view_result -[extend]-> manage_application
