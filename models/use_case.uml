@@ -1,0 +1,70 @@
+@startuml
+
+title Варианты использования валидации юридического лица
+set direction = LR
+
+actor client as "Клиент"
+actor employee as "Сотрудник"
+actor admin as "Администратор"
+actor externals as "Внешние системы"
+
+client -[hidden, right]- employee
+admin -------[hidden, left]- externals
+
+package company_validation as "Система валидации юридического лица" {
+
+  package application_service as "Работа с заявкой" {
+    usecase manage_application as "Вести заявку"
+    usecase submit_data as "Подать сведения"
+    usecase view_result as "Посмотреть результат"
+  }
+
+  package check_service as "Проверка" {
+    usecase start_checking as "Начать проверку"
+    usecase identify as "Идентифицировать\nорганизацию и лиц"
+    usecase run_mandatory_checks as "Провести обязательные\nпроверки"
+    usecase account_indicators as "Учесть показатели"
+    usecase record_deal_terms as "Оформить одобрение\nи обеспечение"
+    usecase issue_conclusion as "Вынести заключение"
+    usecase request_external as "Запросить внешние\nсведения"
+  }
+
+  package admin_service as "Администрирование" {
+    usecase maintain_system as "Сопровождать систему"
+    usecase read_reports as "Читать отчёты"
+  }
+}
+
+link include {
+  line: dashed
+  head: arrow_filled
+  tail: none
+  color: #EF6C00
+  label: <<include>>
+}
+
+link extend {
+  line: dashed
+  head: arrow_filled
+  tail: none
+  color: #00FFFF
+  label: <<extend>>
+}
+
+client -- application_service
+employee -- application_service
+employee -- check_service
+admin -- admin_service
+externals -- check_service
+
+submit_data -[extend]-> manage_application
+view_result -[extend]-> manage_application
+
+start_checking -[include]-> identify
+start_checking -[include]-> run_mandatory_checks
+start_checking -[include]-> account_indicators
+start_checking -[include]-> request_external
+record_deal_terms -[extend]-> start_checking
+issue_conclusion -[left, include]-> start_checking
+
+@enduml
