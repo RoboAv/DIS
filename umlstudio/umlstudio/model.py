@@ -119,6 +119,17 @@ class Group:
     def title(self) -> str:
         return self.label or self.name
 
+    @property
+    def cx(self) -> float:
+        return self.x + self.w / 2
+
+    @property
+    def cy(self) -> float:
+        return self.y + self.h / 2
+
+    def box(self) -> tuple[float, float, float, float]:
+        return (self.x, self.y, self.x + self.w, self.y + self.h)
+
 
 @dataclass
 class ShapeDef:

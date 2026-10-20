@@ -20,6 +20,7 @@ from ..parser import (
     SHAPE_HEAD,
     STRUCT_HEAD,
     USE_CALL,
+    split_comments,
 )
 from ..theme import (
     DECORATIONS,
@@ -219,20 +220,12 @@ def _remember_def(bucket: set[str], token: str | None) -> None:
 
 
 def _code_lines(text: str):
-    """Строки без комментариев: номер и код до хвостового ``'`` / ``//``."""
+    """Строки без комментариев: номер и код до ``'``, ``//`` или ``/'``."""
     in_block = False
     for index, line in enumerate(text.split("\n"), start=1):
-        if in_block:
-            if "'/" in line:
-                in_block = False
-            continue
-        if "/'" in line and "'/" not in line:
-            in_block = True
-            continue
-        stripped = line.strip()
-        if not stripped or stripped.startswith("'") or stripped.startswith("//"):
-            continue
-        yield index, _split_comment(line)
+        code, in_block, _spans = split_comments(line, in_block)
+        if code.strip():
+            yield index, code
 
 
 def _collect_symbols(text: str) -> tuple[set[str], set[str], set[str], set[str]]:
@@ -619,20 +612,11 @@ class CodeEditor(ttk.Frame):
         entity_re = _names_re(entities)
         in_block = False
         for index, line in enumerate(source.split("\n"), start=1):
-            if in_block:
-                self._tag(index, 0, len(line), "comment")
-                if "'/" in line:
-                    in_block = False
-                continue
-            if "/'" in line and "'/" not in line:
-                in_block = True
-                self._tag(index, 0, len(line), "comment")
-                continue
-            stripped = line.strip()
-            if stripped.startswith("'") or stripped.startswith("//"):
-                self._tag(index, 0, len(line), "comment")
-                continue
-            self._paint_line(index, line, custom_re, entity_re, structs)
+            code, in_block, spans = split_comments(line, in_block)
+            if code.strip():
+                self._paint_line(index, code, custom_re, entity_re, structs)
+            for start, end in spans:
+                self._tag(index, start, end, "comment")
         self.text.tag_raise("find_hit")
         self.text.tag_raise("find_current")
         self._paint_gutter()

@@ -189,20 +189,31 @@ def _crowfoot(draw, tip, direction, stroke, background, width, scale) -> float:
     return _foot(draw, tip, direction, stroke, width, scale)
 
 
+def _bar_standoff(width: int, scale: float) -> float:
+    """Сдвиг центра черты от границы: половина толщины плюс видимый зазор.
+
+    Иначе черта лежит на контуре объекта и теряется.
+    """
+    thick = max(width, int(round(2 * scale)))
+    return thick / 2 + 3.0 * scale
+
+
 def _exactly_one(draw, tip, direction, stroke, background, width, scale) -> float:
     gap = 5.0 * scale
-    _tick(draw, tip, direction, stroke, width, scale)
-    _tick(draw, _back(tip, direction, gap), direction, stroke, width, scale)
-    return gap + scale
+    inset = _bar_standoff(width, scale)
+    _tick(draw, _back(tip, direction, inset), direction, stroke, width, scale)
+    _tick(draw, _back(tip, direction, inset + gap), direction, stroke, width, scale)
+    return inset + gap + scale
 
 
 def _zero_or_one(draw, tip, direction, stroke, background, width, scale) -> float:
     radius = 4.2 * scale
     gap = 3.5 * scale
-    _tick(draw, tip, direction, stroke, width, scale)
-    _hollow(draw, _back(tip, direction, gap + radius), radius, stroke,
+    inset = _bar_standoff(width, scale)
+    _tick(draw, _back(tip, direction, inset), direction, stroke, width, scale)
+    _hollow(draw, _back(tip, direction, inset + gap + radius), radius, stroke,
             background, width)
-    return gap + 2 * radius
+    return inset + gap + 2 * radius
 
 
 def _one_or_many(draw, tip, direction, stroke, background, width, scale) -> float:

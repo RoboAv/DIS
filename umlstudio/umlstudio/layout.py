@@ -14,7 +14,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from .geometry import border_point, normalize, perpendicular, point_at
-from .model import Diagram, Edge
+from .model import Diagram, Edge, Group
 from .style import StyleResolver
 
 RECTISH = {"rect", "roundrect", "component", "node3d", "note", "folder",
@@ -868,6 +868,9 @@ def layout_diagram(diagram: Diagram, style: StyleResolver) -> None:
     ancestors: dict[str, list[str]] = {}
     for name, node in diagram.nodes.items():
         ancestors[name] = diagram.group_path(node.group)
+    for name, group in diagram.groups.items():
+        if name not in ancestors:
+            ancestors[name] = diagram.group_path(group.parent)
 
     def item_key(level: str | None, node_name: str) -> str | None:
         chain = ancestors.get(node_name, [])
@@ -929,6 +932,7 @@ def layout_diagram(diagram: Diagram, style: StyleResolver) -> None:
     _place(diagram, style, None, origin, level_items, level_links, opts)
 
     _route_lifted(diagram, level_links, opts, style)
+    _route_group_ends(diagram, opts, style)
     _route_self_loops(diagram, opts, style)
     _route_notowning(diagram, opts, style)
     _fit_outside(diagram, opts.padding, origin[1])
@@ -1027,7 +1031,7 @@ def _route_lifted(diagram: Diagram, level_links, opts: LayoutOptions,
             if not link.lifted:
                 continue
             edge = link.edge
-            a, b = diagram.nodes.get(edge.a), diagram.nodes.get(edge.b)
+            a, b = _endpoint(diagram, edge.a), _endpoint(diagram, edge.b)
             if a is None or b is None:
                 edge.points = []
                 continue
@@ -1041,9 +1045,18 @@ def _route_lifted(diagram: Diagram, level_links, opts: LayoutOptions,
                                           opts, style, lane)
 
 
+def _endpoint(diagram: Diagram, name: str):
+    """Объект или пакет с указанным именем."""
+    found = diagram.nodes.get(name)
+    if found is not None:
+        return found
+    return diagram.groups.get(name)
+
+
 def _corridor(diagram: Diagram, node) -> tuple[float, float, float, float]:
     """Габариты самого внешнего пакета, в котором лежит объект."""
-    chain = diagram.group_path(node.group)
+    parent = node.parent if isinstance(node, Group) else node.group
+    chain = diagram.group_path(parent)
     if not chain:
         return node.box()
     group = diagram.groups[chain[0]]
@@ -1108,6 +1121,51 @@ def _direct_route(a, b, opts: LayoutOptions, style: StyleResolver
     return points if top is a else list(reversed(points))
 
 
+def _center_inside(outer, inner) -> bool:
+    return (outer.x < inner.cx < outer.x + outer.w and
+            outer.y < inner.cy < outer.y + outer.h)
+
+
+def _border_route(inner, outer, side: str | None) -> list[tuple[float, float]]:
+    """Линия от объекта внутри пакета к ближайшей (или заданной) грани пакета."""
+    if side not in ("left", "right", "up", "down"):
+        dists = {
+            "left": inner.cx - outer.x,
+            "right": (outer.x + outer.w) - inner.cx,
+            "up": inner.cy - outer.y,
+            "down": (outer.y + outer.h) - inner.cy,
+        }
+        side = min(dists, key=dists.get)
+    if side == "left":
+        return [(inner.x, inner.cy), (outer.x, inner.cy)]
+    if side == "right":
+        return [(inner.x + inner.w, inner.cy), (outer.x + outer.w, inner.cy)]
+    if side == "up":
+        return [(inner.cx, inner.y), (inner.cx, outer.y)]
+    return [(inner.cx, inner.y + inner.h), (inner.cx, outer.y + outer.h)]
+
+
+def _route_group_ends(diagram: Diagram, opts: LayoutOptions,
+                      style: StyleResolver) -> None:
+    """Дотягивает связи, у которых конец — сам пакет, а не объект внутри него."""
+    for edge in diagram.edges:
+        if edge.points or edge.notowning:
+            continue
+        a = _endpoint(diagram, edge.a)
+        b = _endpoint(diagram, edge.b)
+        if a is None or b is None or a is b:
+            continue
+        if edge.a not in diagram.groups and edge.b not in diagram.groups:
+            continue
+        side = edge.direction or None
+        if _center_inside(b, a):
+            edge.points = _border_route(a, b, side)
+        elif _center_inside(a, b):
+            edge.points = list(reversed(_border_route(b, a, side)))
+        else:
+            edge.points = _direct_route(a, b, opts, style)
+
+
 _EXIT_SIDES = ("left", "right", "up", "down")
 
 
@@ -1123,8 +1181,8 @@ def _route_notowning(diagram: Diagram, opts: LayoutOptions,
     entries: dict[tuple[str, str], list[Edge]] = defaultdict(list)
     chosen: dict[int, tuple[str, str]] = {}
     for edge in edges:
-        source = diagram.nodes.get(edge.a)
-        target = diagram.nodes.get(edge.b)
+        source = _endpoint(diagram, edge.a)
+        target = _endpoint(diagram, edge.b)
         if source is None or target is None:
             edge.points = []
             continue
@@ -1147,8 +1205,8 @@ def _route_notowning(diagram: Diagram, opts: LayoutOptions,
     loops: dict[tuple[str, str], int] = defaultdict(int)
 
     for edge in edges:
-        source = diagram.nodes.get(edge.a)
-        target = diagram.nodes.get(edge.b)
+        source = _endpoint(diagram, edge.a)
+        target = _endpoint(diagram, edge.b)
         if source is None or target is None:
             continue
         if source is target:
@@ -1269,7 +1327,7 @@ def _route_self_loops(diagram: Diagram, opts: LayoutOptions,
     for edge in diagram.edges:
         if edge.notowning or edge.a != edge.b or edge.points:
             continue
-        node = diagram.nodes.get(edge.a)
+        node = _endpoint(diagram, edge.a)
         if node is None:
             continue
         index = counters[edge.a]
