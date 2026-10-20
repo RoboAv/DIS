@@ -1,49 +1,180 @@
 @startuml
-title КМПО валидации
 
-shape relation {
+set theme = light
+set direction = TB
+set rank_sep = 88
+set node_sep = 100
+set font_size = 16
+set font = Segoe UI
+set hide_empty = on
+set padding = 48
+set shadow = off
+set edge_style = ortho
+
+shape сущность extends class {
+  accent: #1565c0
+}
+
+shape rel {
   form: diamond
+  accent: #6a1b9a
 }
 
-class company {
-  
+shape control extends class {
+  accent: #b71c1c
 }
 
-class request {
-  
+сущность "Физическое лицо" as Person {
+  ФИО
+  паспорт и дата рождения
+  гражданство и адрес
 }
 
-class verdict {
-  
+rel Part as "Участие" {
+  доля
+  вид связи
+  основание
 }
 
-class finances {
-  
+сущность "Юридическое лицо" as Company {
+  наименование и ОПФ
+  ИНН, ОГРН и ОКВЭД
+  статус, адрес, лицензия
 }
 
-class holdings {
-  
+rel Hold as "Владение" {
+  доля
+  основание
 }
 
-relation related {
-  share
+control "Согласие" as Consent {
+  цель обработки
+  основание
+  срок действия
 }
 
-company -[bottom]- request
-company -[right]- related
+сущность "Обязательная проверка" as Check {
+  вид и норма
+  результат проверки
+  источник и дата
+}
 
-company -- finances
-company -- holdings
+сущность "Финансовая отчётность" as Report {
+  форма и период
+  валюта отчёта
+  дата составления
+}
 
+сущность "Показатель" as Fact {
+  вид и период
+  значение показателя
+  источник и дата
+}
 
-related -[right]- person
+rel Used as "Учтено" {
+  вес
+  порог
+  вывод
+}
 
-request -[bottom]- verdict
+сущность "Заявка" as Request {
+  номер, дата и канал
+  сумма, срок и валюта
+  статус и цель проверки
+}
 
-' request -[hidden, left]- finances
-' request -[hidden, right]- holdings
-' verdict -[hidden, left]- holdings
-' verdict -[hidden, right]- finances
-' verdict -[hidden, right]- holdings
+сущность "Кредитные условия" as Terms {
+  продукт и валюта
+  лимиты и срок
+  требование обеспечения
+}
+
+сущность "Корпоративное одобрение" as Approval {
+  орган и дата решения
+  вид сделки
+  одобренная сумма
+}
+
+сущность "Обеспечение" as Pledge {
+  вид и предмет залога
+  оценка стоимости
+  действующее обременение
+}
+
+сущность "Заключение" as Verdict {
+  результат проверки
+  уровень риска
+  срок действия
+  причина отказа
+}
+
+control "Правило хранения" as Rule {
+  категория сведений
+  основание и срок
+  событие начала отсчёта
+}
+
+Person ||-[right]-o{ Part : участвует
+Part }o-[right]-|| Company : в организации
+Company ||-[right]-o{ Hold : владеет
+Hold }o--[notowning, up, up]-|| Company : объект
+
+Person ||-[down]-o{ Consent : даёт
+Company ||-[down]-o{ Consent : даёт
+Consent |o--[right]-o{ Check : допускает
+Part |o-[down]-o{ Check : по лицу
+
+' Check -[hidden, left]- Report
+
+Company ||-[down]-o{ Report : ведёт
+Report |o--[down]-o{ Fact : содержит
+' Company ||-----[notowning, down, up]-o{ Fact : имеет
+Fact ||-[right]-o{ Used : входит
+Used }o-[right]-|| Request : в заявке
+
+Company ||-[down]-o{ Request : подаёт
+' Request }o----[notowning, up, right]-o{ Company : поручитель
+Request }o-[right]-|| Terms : на условиях
+Check -[hidden,down]- Request
+Check }|---[notowning, down, up]-|| Request : проходит
+
+' Request -[hidden,down]- Approval
+Request ||---[notowning, down, up]-o{ Approval : одобрена
+Request ||--[down]-o{ Pledge : предлагает
+' Pledge }o--[notowning, right, up]-o| Company : собственник
+Request ||-[down]-o{ Verdict : рассматривается
+
+' Rule ||-----[notowning, left, left]-o{ Person : клиент
+' Rule ||---[notowning, up, down]-o{ Company : клиент
+' Rule ||--[up]-o{ Fact : показатель
+' Rule -[hidden,up]- Request
+' Rule -[hidden,up]- Terms
+' Rule ||-[notowning, up, down]-o{ Request : пакет
+' Rule ||---[notowning, up, down]-o{ Terms : условия
+
+Person -[hidden,right]- Part
+Part -[hidden,right]- Company
+
+Consent -[hidden,right]- Check
+Check -[hidden,right]- Report
+' Report -[hidden,right]- Hold
+
+Fact -[hidden,right]- Used
+Used -[hidden,right]- Request
+Request -[hidden,right]- Terms
+
+' Rule -[hidden,right]- Approval
+Approval -[hidden,right]- Pledge
+Pledge -[hidden,right]- Verdict
+
+legend
+Синий — данные предметной области
+Красный — контроль обработки и хранения
+Ромб — связь с собственными данными
+Хранение «клиент» — физическое и юридическое лицо; участие и владение хранятся вместе с ними
+Хранение «показатель» — показатель и финансовая отчётность
+Хранение «пакет» — заявка, проверка, учтено, одобрение, обеспечение и заключение
+Хранение «условия» — кредитные условия
+endlegend
 
 @enduml

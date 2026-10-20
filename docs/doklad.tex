@@ -1,0 +1,82 @@
+\documentclass[14pt,a4paper]{extarticle}
+
+\usepackage{fontspec}
+\setmainfont{Times New Roman}[Ligatures=TeX]
+\setmonofont{Courier New}
+\newfontfamily\cyrillicfonttt{Courier New}
+
+\usepackage{polyglossia}
+\setmainlanguage[forceheadingpunctuation=false]{russian}
+\setotherlanguage{english}
+
+\usepackage{geometry}
+\geometry{left=30mm,right=15mm,top=20mm,bottom=20mm}
+
+\usepackage{setspace}
+\onehalfspacing
+\usepackage{indentfirst}
+
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{caption}
+\captionsetup{font=normalsize,skip=8pt,justification=centering}
+\renewcommand{\labelitemi}{\textbullet}
+
+\usepackage{pdfpages}
+\usepackage{hyperref}
+\hypersetup{hidelinks,unicode,pdftitle={Проектирование информационной системы валидации юридического лица для получения кредита}}
+
+\setlength{\parskip}{0pt}
+\clubpenalty=10000
+\widowpenalty=10000
+\emergencystretch=3em
+
+\begin{document}
+
+\IfFileExists{first_page.pdf}{%
+\includepdf[pages=1,pagecommand={\thispagestyle{empty}}]{first_page.pdf}%
+}{%
+\begin{titlepage}
+\thispagestyle{empty}
+\centering
+\setlength{\parindent}{0pt}
+МИНИСТЕРСТВО НАУКИ И ВЫСШЕГО ОБРАЗОВАНИЯ РОССИЙСКОЙ\\
+ФЕДЕРАЦИИ\\
+ФЕДЕРАЛЬНОЕ ГОСУДАРСТВЕННОЕ АВТОНОМНОЕ\\
+ОБРАЗОВАТЕЛЬНОЕ УЧРЕЖДЕНИЕ ВЫСШЕГО ОБРАЗОВАНИЯ\\
+НАЦИОНАЛЬНЫЙ ИССЛЕДОВАТЕЛЬСКИЙ ЯДЕРНЫЙ УНИВЕРСИТЕТ\\
+«МИФИ»\par
+\vspace{28.3pt}
+Институт интеллектуальных кибернетических систем\\
+Кафедра кибернетики (№22)\\
+Направление подготовки 09.04.04 Программная инженерия\par
+\vspace{85pt}
+{\bfseries Курсовая работа по моделированию предметных сред\\
+и проектированию баз данных}\par
+\vspace{28.3pt}
+{\bfseries «Проектирование информационной системы\\
+валидации юридического лица\\
+для получения кредита»}\par
+\vfill
+\raggedright
+\hfill
+\begin{minipage}{0.62\textwidth}
+Выполнил студент группы М26-514\\
+Гришанов~Н.\,В.\\[0.9em]
+Преподаватель\\
+Тихомирова~Д.\,В.
+\end{minipage}\par
+\vspace{1.6em}
+\centering
+Москва 2026\par
+\end{titlepage}
+}
+
+\renewcommand{\contentsname}{Содержание}
+\tableofcontents
+\newpage
+
+\input{razdely/razdel1}
+\input{razdely/razdel2}
+
+\end{document}
