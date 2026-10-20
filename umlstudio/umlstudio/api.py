@@ -47,7 +47,7 @@ class RenderResult:
 
 
 def build(text: str, scale: float = 1.0, supersample: int = 2,
-          theme: str | None = None) -> RenderResult:
+          theme: str | None = None, honor_manual: bool = True) -> RenderResult:
     """Разбирает текст, раскладывает диаграмму и рисует PNG в память."""
     started = time.perf_counter()
     diagram, diagnostics = parse(text or "")
@@ -57,7 +57,8 @@ def build(text: str, scale: float = 1.0, supersample: int = 2,
     scale = max(0.2, float(scale) * float(diagram.opt("scale", 1) or 1))
 
     try:
-        image = _render(diagram, palette, scale, max(1, int(supersample)))
+        image = _render(diagram, palette, scale, max(1, int(supersample)),
+                        honor_manual)
     except Exception as exc:  # отрисовка не должна валить приложение
         return RenderResult(None, diagram, diagnostics,
                             time.perf_counter() - started,
@@ -66,11 +67,11 @@ def build(text: str, scale: float = 1.0, supersample: int = 2,
                         time.perf_counter() - started)
 
 
-def _render(diagram: Diagram, palette, scale: float, supersample: int
-            ) -> Image.Image:
+def _render(diagram: Diagram, palette, scale: float, supersample: int,
+            honor_manual: bool = True) -> Image.Image:
     for factor in _factors(supersample):
         style = StyleResolver(diagram, palette, scale * factor)
-        layout_diagram(diagram, style)
+        layout_diagram(diagram, style, honor_manual=honor_manual)
         area = max(1.0, diagram.width) * max(1.0, diagram.height)
         if area > MAX_SUPERSAMPLED_PIXELS and factor > 1:
             continue
@@ -90,10 +91,31 @@ def _factors(supersample: int) -> list[int]:
     return factors
 
 
+def layout_only(text: str, theme: str | None = None,
+                honor_manual: bool = True) -> RenderResult:
+    """Разбирает текст и раскладывает диаграмму без картинки."""
+    started = time.perf_counter()
+    diagram, diagnostics = parse(text or "")
+    if theme:
+        diagram.options.setdefault("theme", theme)
+    palette = get_theme(str(diagram.opt("theme", "light")))
+    scale = max(0.2, float(diagram.opt("scale", 1) or 1))
+    try:
+        style = StyleResolver(diagram, palette, scale)
+        layout_diagram(diagram, style, honor_manual=honor_manual)
+    except Exception as exc:
+        return RenderResult(None, diagram, diagnostics,
+                            time.perf_counter() - started,
+                            f"{type(exc).__name__}: {exc}")
+    return RenderResult(None, diagram, diagnostics, time.perf_counter() - started)
+
+
 def render_to_file(text: str, path: str, scale: float = 1.0,
-                   supersample: int = 2, dpi: int = 96) -> RenderResult:
+                   supersample: int = 2, dpi: int = 96,
+                   honor_manual: bool = True) -> RenderResult:
     """Рисует диаграмму и сохраняет её в PNG."""
-    result = build(text, scale=scale, supersample=supersample)
+    result = build(text, scale=scale, supersample=supersample,
+                   honor_manual=honor_manual)
     if result.image is None:
         return result
     image = result.image

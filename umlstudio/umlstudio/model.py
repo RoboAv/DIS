@@ -43,6 +43,9 @@ class Node:
     group: str | None = None
     style: dict[str, Any] = field(default_factory=dict)
     src_line: int = 0
+    # Левый верх, если положение задано вручную. None — считает раскладка.
+    pin: tuple[float, float] | None = None
+    locked: bool = False
 
     # --- результат раскладки (в пикселях итогового изображения) ---
     x: float = 0.0
@@ -92,6 +95,9 @@ class Edge:
     notowning: bool = False   # линия есть, на раскладку блоков не влияет
     min_span: int = 1         # минимум уровней: 1 для «--», дальше по символу линии
     src_line: int = 0
+    # Промежуточные узлы линии. Пусто — маршрут строит раскладка.
+    waypoints: list[tuple[float, float]] = field(default_factory=list)
+    locked: bool = False
 
     # --- результат раскладки ---
     points: list[tuple[float, float]] = field(default_factory=list)
@@ -108,6 +114,8 @@ class Group:
     parent: str | None = None
     style: dict[str, Any] = field(default_factory=dict)
     src_line: int = 0
+    pin: tuple[float, float] | None = None
+    locked: bool = False
 
     x: float = 0.0
     y: float = 0.0

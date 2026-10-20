@@ -539,6 +539,26 @@ class CodeEditor(ttk.Frame):
         self.schedule_paint()
         self._cursor_moved()
 
+    def replace_text(self, value: str) -> None:
+        """Заменяет весь текст, сохраняя курсор и отмену."""
+        if value == self.get_text():
+            return
+        cursor = self.text.index("insert")
+        yview = self.text.yview()[0]
+        self.text.edit_separator()
+        self.text.delete("1.0", "end")
+        self.text.insert("1.0", value)
+        self.text.edit_separator()
+        try:
+            self.text.mark_set("insert", cursor)
+        except tk.TclError:
+            self.text.mark_set("insert", "end-1c")
+        self.text.yview_moveto(yview)
+        self.schedule_paint()
+        self._cursor_moved()
+        if self._on_change:
+            self._on_change()
+
     def insert_snippet(self, snippet: str) -> None:
         line = self.text.get("insert linestart", "insert lineend")
         prefix = "" if not line.strip() else "\n"

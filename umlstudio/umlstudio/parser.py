@@ -83,6 +83,32 @@ NOTE_OF = re.compile(
 NOTE_AS = re.compile(rf'^\s*note\s+(?:"(?P<text>[^"]*)"\s+)?as\s+(?P<alias>{IDENT})\s*$')
 KV = re.compile(r"^\s*(?P<k>[\w.\u0400-\u04FF-]+)\s*[:=]\s*(?P<v>.*?)\s*$")
 
+_NUMR = r"-?\d+(?:\.\d+)?"
+_LOCK = r"lock|locked|блок|замок"
+_POS_WORD = r"(?<!\w)(?:at|положение)(?!\w)"
+_VIA_WORD = r"(?<!\w)(?:via|через|узлы)(?!\w)"
+AT_LINE = re.compile(
+    rf"^\s*{_POS_WORD}\s+(?P<name>{IDENT})\s+"
+    rf"(?P<x>{_NUMR})\s*,\s*(?P<y>{_NUMR})"
+    rf"(?:\s+(?P<lock>{_LOCK}))?\s*$",
+    re.IGNORECASE,
+)
+VIA_LINE = re.compile(
+    rf"^\s*(?:via|через)\s+(?P<a>{IDENT})\s+(?P<b>{IDENT})"
+    rf"(?:\s+#(?P<n>\d+))?\s+(?P<pts>.+?)\s*$",
+    re.IGNORECASE,
+)
+AT_SUFFIX = re.compile(
+    rf"{_POS_WORD}\s+(?P<x>{_NUMR})\s*,\s*(?P<y>{_NUMR})"
+    rf"(?:\s+(?P<lock>{_LOCK}))?\s*$",
+    re.IGNORECASE,
+)
+VIA_ATTR = re.compile(
+    rf"{_VIA_WORD}\s*=\s*(?P<pts>{_NUMR}(?:\s*,\s*|\s+){_NUMR}"
+    rf"(?:\s*;\s*{_NUMR}(?:\s*,\s*|\s+){_NUMR})*)",
+    re.IGNORECASE,
+)
+
 TRUE_WORDS = {"on", "true", "1", "yes", "y", "да", "вкл"}
 FALSE_WORDS = {"off", "false", "0", "no", "n", "нет", "выкл"}
 
@@ -236,6 +262,8 @@ class Parser:
         self._note_seq = 0
         self._group_seq = 0
         self._depth = 0
+        self._vias: list[tuple] = []
+        self._pending_at: list[tuple] = []
 
     # ------------------------------------------------------------ public --
 
@@ -579,6 +607,14 @@ class Parser:
                 self._parse_set(no, stripped.split(maxsplit=1)[-1])
                 i += 1
                 continue
+            if first in ("at", "положение") and AT_LINE.match(stripped):
+                self._parse_at(no, stripped)
+                i += 1
+                continue
+            if first in ("via", "через") and VIA_LINE.match(stripped):
+                self._parse_via(no, stripped)
+                i += 1
+                continue
 
             # --- заметки ---
             if first in ("note", "заметка"):
@@ -759,6 +795,13 @@ class Parser:
         if color:
             style["fill"] = color.group(0)
             rest = rest[: color.start()] + rest[color.end():]
+        pin = None
+        pinned = False
+        located = AT_SUFFIX.search(rest)
+        if located:
+            pin = (float(located.group("x")), float(located.group("y")))
+            pinned = bool(located.group("lock"))
+            rest = (rest[: located.start()] + rest[located.end():]).strip()
         leftover = rest.strip().strip("{}").strip()
         if leftover:
             self._warn(no, f"непонятный остаток объявления: {leftover}", stripped)
@@ -775,6 +818,9 @@ class Parser:
         if stereotype:
             node.stereotype = stereotype
         node.style.update(style)
+        if pin is not None:
+            node.pin = pin
+            node.locked = pinned
         if group and node.group is None:
             node.group = group
         if body:
@@ -925,6 +971,12 @@ class Parser:
         edge.kind = self._guess_kind(edge)
         if not attrs:
             return
+        located = VIA_ATTR.search(attrs)
+        if located:
+            edge.waypoints = parse_points(located.group("pts"))
+            attrs = (attrs[: located.start()] + " " + attrs[located.end():]).strip(" ,")
+        if not attrs:
+            return
         faces: list[str] = []
         for token in _split_args(attrs):
             tok = token.strip()
@@ -940,6 +992,8 @@ class Parser:
                 edge.color = "hidden"
             elif low in ("notowning", "notwoning"):
                 edge.notowning = True
+            elif low in ("lock", "locked", "блок", "замок"):
+                edge.locked = True
             elif low in DIR_WORDS:
                 faces.append(DIR_WORDS[low])
             elif normalize_link(low) in LINK_DEFAULTS or tok in self.d.links:
@@ -1129,6 +1183,66 @@ class Parser:
         if self.d.opt("hide_empty"):
             for node in self.d.nodes.values():
                 node.compartments = [c for c in node.compartments if c.members]
+        for no, name, x, y, locked in self._pending_at:
+            if not self._assign_at(name, x, y, locked):
+                self._warn(no, f"положение: нет объекта {name}")
+        self._apply_vias()
+
+    def _assign_at(self, name: str, x: float, y: float, locked: bool) -> bool:
+        target = self.d.nodes.get(name)
+        if target is None:
+            target = self.d.groups.get(name)
+        if target is None:
+            return False
+        target.pin = (x, y)
+        target.locked = locked
+        return True
+
+    def _parse_at(self, no: int, stripped: str) -> None:
+        found = AT_LINE.match(stripped)
+        if not found:
+            self._warn(no, "ожидалось: at Имя x, y [lock]", stripped)
+            return
+        name = _unquote(found.group("name"))
+        x, y = float(found.group("x")), float(found.group("y"))
+        locked = bool(found.group("lock"))
+        if not self._assign_at(name, x, y, locked):
+            self._pending_at.append((no, name, x, y, locked))
+
+    def _parse_via(self, no: int, stripped: str) -> None:
+        found = VIA_LINE.match(stripped)
+        if not found:
+            self._warn(no, "ожидалось: via A B [#n] x, y; ... [lock]", stripped)
+            return
+        points = parse_points(found.group("pts"))
+        if not points and not has_lock(found.group("pts")):
+            self._warn(no, "у via нет координат", stripped)
+            return
+        index = int(found.group("n")) if found.group("n") else None
+        self._vias.append((
+            no, _unquote(found.group("a")), _unquote(found.group("b")),
+            index, points, has_lock(found.group("pts")),
+        ))
+
+    def _apply_vias(self) -> None:
+        buckets: dict[tuple[str, str], list[Edge]] = {}
+        for edge in self.d.edges:
+            buckets.setdefault((edge.a, edge.b), []).append(edge)
+        for no, a, b, index, points, locked in self._vias:
+            edges = buckets.get((a, b), [])
+            if not edges:
+                self._warn(no, f"via: нет связи {a} -> {b}")
+                continue
+            if index is None:
+                target = next((item for item in edges if not item.waypoints), edges[-1])
+            elif index < 1 or index > len(edges):
+                self._warn(no, f"via: у {a} -> {b} нет связи #{index}")
+                continue
+            else:
+                target = edges[index - 1]
+            if points:
+                target.waypoints = points
+            target.locked = locked
 
 
 def _substitute(line: str, mapping: dict[str, str]) -> str:
@@ -1163,6 +1277,22 @@ def _substitute(line: str, mapping: dict[str, str]) -> str:
             out.append(line[i])
             i += 1
     return "".join(out)
+
+
+def parse_points(text: str) -> list[tuple[float, float]]:
+    """Пары координат из ``x, y; x, y`` или ``x y; x y``."""
+    cleaned = re.sub(rf"\s+(?:{_LOCK})\s*$", "", text.strip(), flags=re.IGNORECASE)
+    number = re.compile(_NUMR)
+    points: list[tuple[float, float]] = []
+    for chunk in cleaned.split(";"):
+        nums = [float(item) for item in number.findall(chunk)]
+        if len(nums) >= 2:
+            points.append((nums[0], nums[1]))
+    return points
+
+
+def has_lock(text: str) -> bool:
+    return re.search(rf"(?<!\w)(?:{_LOCK})(?!\w)", text, re.IGNORECASE) is not None
 
 
 def _num(value: str, default: float) -> float:

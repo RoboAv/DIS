@@ -851,8 +851,13 @@ def _isotonic(values: list[float], weights: list[float]) -> list[float]:
 # ------------------------------------------------------- раскладка целиком --
 
 
-def layout_diagram(diagram: Diagram, style: StyleResolver) -> None:
-    """Расставляет координаты всех объектов, групп и связей."""
+def layout_diagram(diagram: Diagram, style: StyleResolver,
+                   honor_manual: bool = True) -> None:
+    """Расставляет координаты всех объектов, групп и связей.
+
+    ``honor_manual`` оставляет координаты, заданные вручную. При ``False``
+    они игнорируются, кроме объектов с индивидуальной блокировкой.
+    """
     opts = _options(diagram, style)
     for node in diagram.nodes.values():
         style.measure_node(node)
@@ -945,6 +950,11 @@ def layout_diagram(diagram: Diagram, style: StyleResolver) -> None:
     if needed > width:
         _shift_all(diagram, (needed - width) / 2)
         width = needed
+    if _apply_manual_positions(diagram, style, opts, honor_manual):
+        width, height = _bounds(diagram, style)
+        width += opts.padding
+        needed = reserve["width"] + 2 * opts.padding
+        width = max(width, needed)
     diagram.width = width
     diagram.height = height + opts.padding + reserve["bottom"]
     diagram.metrics = {
@@ -952,6 +962,7 @@ def layout_diagram(diagram: Diagram, style: StyleResolver) -> None:
         "padding": opts.padding,
         "corner": opts.corner,
         "direction": opts.direction,
+        "scale": style.scale,
     }
 
 
@@ -1424,6 +1435,223 @@ def _fit_outside(diagram: Diagram, min_x: float, min_y: float) -> None:
         return
     dx = max(0.0, min_x - min(xs))
     dy = max(0.0, min_y - min(ys))
+    if dx or dy:
+        _shift_all(diagram, dx, dy)
+
+
+def _apply_manual_positions(diagram: Diagram, style: StyleResolver,
+                           opts: LayoutOptions, honor_manual: bool) -> bool:
+    """Ставит зафиксированные блоки и проводит связи через заданные узлы."""
+
+    def take_node(node) -> bool:
+        return node.pin is not None and (honor_manual or node.locked)
+
+    def take_group(group: Group) -> bool:
+        return group.pin is not None and (honor_manual or group.locked)
+
+    def take_edge(edge: Edge) -> bool:
+        return bool(edge.waypoints) and (honor_manual or edge.locked)
+
+    if not any(take_node(node) for node in diagram.nodes.values()) and \
+            not any(take_group(group) for group in diagram.groups.values()) and \
+            not any(take_edge(edge) for edge in diagram.edges):
+        return False
+
+    shifted: set[str] = set()
+    displaced: set[str] = set()
+
+    for group in sorted(diagram.groups.values(),
+                        key=lambda item: _nesting(diagram, item.name)):
+        if not take_group(group) or group.pin is None:
+            continue
+        dx = style.px(group.pin[0]) - group.x
+        dy = style.px(group.pin[1]) - group.y
+        if abs(dx) < 0.5 and abs(dy) < 0.5:
+            continue
+        names = _subtree(diagram, group.name)
+        _translate_members(diagram, names, dx, dy)
+        shifted.update(names)
+
+    for node in diagram.nodes.values():
+        if not take_node(node) or node.pin is None:
+            continue
+        dx = style.px(node.pin[0]) - node.x
+        dy = style.px(node.pin[1]) - node.y
+        if abs(dx) < 0.5 and abs(dy) < 0.5:
+            continue
+        node.x += dx
+        node.y += dy
+        for edge in diagram.edges:
+            if edge.a == node.name and edge.b == node.name:
+                edge.points = [(px + dx, py + dy) for px, py in edge.points]
+                if edge.label_pos:
+                    edge.label_pos = (edge.label_pos[0] + dx,
+                                      edge.label_pos[1] + dy)
+        displaced.add(node.name)
+
+    repacked = _repack_groups(diagram, style, displaced, honor_manual)
+
+    for edge in diagram.edges:
+        if take_edge(edge):
+            _route_waypoints(diagram, edge, style)
+            continue
+        if edge.a == edge.b:
+            continue
+        a_in = edge.a in shifted
+        b_in = edge.b in shifted
+        if edge.a in displaced or edge.b in displaced:
+            _reroute(diagram, edge, opts, style)
+        elif a_in != b_in:
+            _reroute(diagram, edge, opts, style)
+        elif edge.a in repacked or edge.b in repacked:
+            _reroute(diagram, edge, opts, style)
+
+    attach_shape_ends(diagram, style)
+    _place_labels(diagram, style, opts)
+    _shift_negative(diagram)
+    return True
+
+
+def _subtree(diagram: Diagram, name: str) -> set[str]:
+    names = {name}
+    changed = True
+    while changed:
+        changed = False
+        for group in diagram.groups.values():
+            if group.parent in names and group.name not in names:
+                names.add(group.name)
+                changed = True
+        for node in diagram.nodes.values():
+            if node.group in names and node.name not in names:
+                names.add(node.name)
+                changed = True
+    return names
+
+
+def _translate_members(diagram: Diagram, names: set[str],
+                       dx: float, dy: float) -> None:
+    for node in diagram.nodes.values():
+        if node.name in names:
+            node.x += dx
+            node.y += dy
+    for group in diagram.groups.values():
+        if group.name in names:
+            group.x += dx
+            group.y += dy
+    for edge in diagram.edges:
+        if edge.a in names and edge.b in names:
+            edge.points = [(px + dx, py + dy) for px, py in edge.points]
+            if edge.label_pos:
+                edge.label_pos = (edge.label_pos[0] + dx, edge.label_pos[1] + dy)
+
+
+def _repack_groups(diagram: Diagram, style: StyleResolver,
+                   displaced: set[str], honor_manual: bool) -> set[str]:
+    """Подгоняет пакеты под сдвинутые блоки. Возвращает изменённые пакеты."""
+    dirty: set[str] = set()
+    for name in displaced:
+        node = diagram.nodes.get(name)
+        if node is None:
+            continue
+        parent = node.group
+        seen: set[str] = set()
+        while parent and parent not in seen and parent in diagram.groups:
+            seen.add(parent)
+            dirty.add(parent)
+            parent = diagram.groups[parent].parent
+    repacked: set[str] = set()
+
+    def depth(group_name: str) -> int:
+        return _nesting(diagram, group_name)
+
+    for name in sorted(dirty, key=depth, reverse=True):
+        group = diagram.groups[name]
+        if group.pin is not None and (honor_manual or group.locked):
+            continue
+        if _fit_group(diagram, style, group):
+            repacked.add(name)
+    return repacked
+
+
+def _nesting(diagram: Diagram, name: str) -> int:
+    depth = 0
+    parent = diagram.groups[name].parent if name in diagram.groups else None
+    seen: set[str] = set()
+    while parent and parent not in seen and parent in diagram.groups:
+        seen.add(parent)
+        depth += 1
+        parent = diagram.groups[parent].parent
+    return depth
+
+
+def _fit_group(diagram: Diagram, style: StyleResolver, group: Group) -> bool:
+    boxes: list[tuple[float, float, float, float]] = []
+    for node in diagram.nodes.values():
+        if node.group == group.name:
+            boxes.append(node.box())
+    for child in diagram.groups.values():
+        if child.parent == group.name:
+            boxes.append(child.box())
+    if not boxes:
+        return False
+    metrics = style.group_metrics(group)
+    pad = metrics["pad"]
+    header = group.header_h or metrics["header_h"]
+    min_x = min(box[0] for box in boxes)
+    min_y = min(box[1] for box in boxes)
+    max_x = max(box[2] for box in boxes)
+    max_y = max(box[3] for box in boxes)
+    group.x = min_x - pad
+    group.y = min_y - header - pad
+    group.w = max(max_x - min_x + 2 * pad, metrics["label_w"], style.px(120))
+    group.h = max_y - min_y + header + 2 * pad
+    group.header_h = header
+    return True
+
+
+def _reroute(diagram: Diagram, edge: Edge, opts: LayoutOptions,
+             style: StyleResolver) -> None:
+    left = _endpoint(diagram, edge.a)
+    right = _endpoint(diagram, edge.b)
+    if left is None or right is None or left is right:
+        return
+    edge.points = _direct_route(left, right, opts, style)
+
+
+def _route_waypoints(diagram: Diagram, edge: Edge, style: StyleResolver) -> None:
+    left = _endpoint(diagram, edge.a)
+    right = _endpoint(diagram, edge.b)
+    if left is None or right is None or not edge.waypoints:
+        return
+    middle = [(style.px(x), style.px(y)) for x, y in edge.waypoints]
+    points = [(left.cx, left.cy), *middle, (right.cx, right.cy)]
+    if left is not right:
+        points[0] = _clip_end(left, points[1], style)
+        points[-1] = _clip_end(right, points[-2], style)
+    edge.points = points
+
+
+def _clip_end(obj, toward: tuple[float, float], style: StyleResolver
+              ) -> tuple[float, float]:
+    form = "rect" if isinstance(obj, Group) else style.node_style(obj)["form"]
+    return border_point(form, obj.box(), toward)
+
+
+def _shift_negative(diagram: Diagram) -> None:
+    xs: list[float] = [0.0]
+    ys: list[float] = [0.0]
+    for node in diagram.nodes.values():
+        xs += [node.x, node.x + node.w]
+        ys += [node.y, node.y + node.h]
+    for group in diagram.groups.values():
+        xs += [group.x, group.x + group.w]
+        ys += [group.y, group.y + group.h]
+    for edge in diagram.edges:
+        for px, py in edge.points:
+            xs.append(px)
+            ys.append(py)
+    dx = max(0.0, -min(xs))
+    dy = max(0.0, -min(ys))
     if dx or dy:
         _shift_all(diagram, dx, dy)
 

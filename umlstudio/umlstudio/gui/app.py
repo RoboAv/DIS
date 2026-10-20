@@ -14,6 +14,13 @@ from tkinter import filedialog, messagebox, ttk
 
 from .. import __version__, api
 from ..parser import parse
+from ..positions import (
+    clear_edge_waypoints,
+    edge_ordinal,
+    schema_text,
+    set_edge_waypoints,
+    set_node_position,
+)
 from . import native, tooltip
 from .dialogs import HelpWindow, LinkDesigner, ShapeDesigner, StructDesigner
 from . import hotkeys
@@ -22,6 +29,7 @@ from .examples import EXAMPLES, STARTER
 from .palette import colors as ui_colors
 from .palette import paint_popdowns
 from .preview import Preview
+from .scene import InteractiveCanvas
 
 FILE_TYPES = [
     ("Диаграмма UML Studio", "*.uml"),
@@ -80,6 +88,8 @@ class _Job:
     text: str
     scale: float
     theme: str
+    honor_manual: bool = True
+    interactive: bool = False
 
 
 class RenderWorker:
@@ -119,8 +129,13 @@ class RenderWorker:
             if job is None:
                 continue
             try:
-                result = api.build(job.text, scale=job.scale, supersample=2,
-                                   theme=job.theme)
+                if job.interactive:
+                    result = api.layout_only(job.text, theme=job.theme,
+                                             honor_manual=job.honor_manual)
+                else:
+                    result = api.build(job.text, scale=job.scale, supersample=2,
+                                       theme=job.theme,
+                                       honor_manual=job.honor_manual)
             except Exception:
                 result = api.RenderResult(error=traceback.format_exc(limit=3))
             self._results.put((job, result))
@@ -146,7 +161,15 @@ class App(tk.Tk):
             value=bool(self.settings.get("auto_render", True)))
         self.export_scale = tk.IntVar(value=int(self.settings.get("export_scale", 2)))
         self.show_problems = tk.BooleanVar(value=True)
+        self.interactive = tk.BooleanVar(
+            value=bool(self.settings.get("interactive", False)))
+        self.positions_locked = tk.BooleanVar(
+            value=bool(self.settings.get("positions_locked", True)))
         self.last_result: api.RenderResult | None = None
+        self._diagram = None
+        self._schema_key: str | None = None
+        self._honor = True
+        self._position_edit = False
         self._seq = 0
         self._applied_seq = -1
         self._render_after: str | None = None
@@ -156,6 +179,9 @@ class App(tk.Tk):
         self._build_ui()
         self._bind_keys()
         self._apply_ui_palette(self.ui_palette)
+        self._sync_lock_caption()
+        if self.interactive.get():
+            self._show_mode(render=False)
 
         if path:
             self._load_file(Path(path))
@@ -203,6 +229,14 @@ class App(tk.Tk):
         right = ttk.Frame(self.panes)
         self.preview = Preview(right, on_zoom_change=self._on_zoom,
                                on_scale_request=self._on_scale_request)
+        self.scene = InteractiveCanvas(
+            right, on_node_moved=self._on_node_moved,
+            on_edge_moved=self._on_edge_moved,
+            on_edge_cleared=self._on_edge_cleared,
+            on_node_lock=self._on_node_lock,
+            on_edge_lock=self._on_edge_lock,
+            on_zoom_change=self._on_zoom,
+        )
         self.preview.pack(fill="both", expand=True)
         self.panes.add(right, weight=4)
         self.after(200, lambda: self._restore_sash())
@@ -283,14 +317,21 @@ class App(tk.Tk):
         view.add_command(label="Обновить сейчас", accelerator="F5",
                          command=self.render_now)
         view.add_separator()
+        view.add_checkbutton(label="Интерактивная область",
+                             variable=self.interactive,
+                             command=self._show_mode)
+        view.add_checkbutton(label="Блокировать положения",
+                             variable=self.positions_locked,
+                             command=self._on_lock_toggle)
+        view.add_separator()
         view.add_command(label="Увеличить", accelerator="Ctrl+=",
-                         command=lambda: self.preview.zoom_in())
+                         command=lambda: self._active_view().zoom_in())
         view.add_command(label="Уменьшить", accelerator="Ctrl+-",
-                         command=lambda: self.preview.zoom_out())
+                         command=lambda: self._active_view().zoom_out())
         view.add_command(label="По размеру окна", accelerator="Ctrl+0",
-                         command=lambda: self.preview.fit())
+                         command=lambda: self._active_view().fit())
         view.add_command(label="Реальный размер", accelerator="Ctrl+1",
-                         command=lambda: self.preview.reset_zoom())
+                         command=lambda: self._active_view().reset_zoom())
         view.add_separator()
         theme_menu = tk.Menu(view, tearoff=0)
         for name in DIAGRAM_THEMES:
@@ -356,6 +397,23 @@ class App(tk.Tk):
                              "через мгновение после правки текста")
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
 
+        mode = ttk.Checkbutton(bar, text="интерактив", variable=self.interactive,
+                               command=self._show_mode)
+        mode.pack(side="left", padx=(0, 4))
+        tooltip.attach(mode, "Справа вместо картинки — область, где блоки "
+                             "и связи можно перетаскивать")
+        self._lock_button = ttk.Checkbutton(
+            bar, text="Заблокировать", variable=self.positions_locked,
+            command=self._on_lock_toggle)
+        self._lock_button.pack(side="left")
+        tooltip.attach(
+            self._lock_button,
+            "Заблокировать: блоки, сдвинутые вручную, остаются на месте "
+            "при изменении схемы. Разблокировать: раскладка двигает их. "
+            "Правый щелчок блокирует один объект",
+        )
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
+
         self._button(bar, "Свой объект…", self.design_shape,
                      "Собрать собственный вид объекта: форма, цвета, "
                      "стереотип, секции  ·  Ctrl+1", side="left", padx=(0, 3))
@@ -383,17 +441,17 @@ class App(tk.Tk):
         # предпросмотр создаётся позже, поэтому вызовы отложенные
         zoom = ttk.Frame(parent)
         zoom.pack(side="right", padx=(0, 10))
-        self._button(zoom, "−", lambda: self.preview.zoom_out(),
+        self._button(zoom, "−", lambda: self._active_view().zoom_out(),
                      "Уменьшить  ·  Ctrl+−  или  Ctrl+колесо",
                      style="Zoom.TButton", side="left")
-        self._button(zoom, "по размеру", lambda: self.preview.fit(),
+        self._button(zoom, "по размеру", lambda: self._active_view().fit(),
                      "Вписать диаграмму в окно  ·  Ctrl+0  "
                      "или двойной щелчок по картинке",
                      style="Zoom.TButton", side="left", padx=3)
-        self._button(zoom, "100%", lambda: self.preview.reset_zoom(),
+        self._button(zoom, "100%", lambda: self._active_view().reset_zoom(),
                      "Показать картинку в настоящем размере",
                      style="Zoom.TButton", side="left")
-        self._button(zoom, "+", lambda: self.preview.zoom_in(),
+        self._button(zoom, "+", lambda: self._active_view().zoom_in(),
                      "Увеличить  ·  Ctrl+=  или  Ctrl+колесо",
                      style="Zoom.TButton", side="left", padx=(3, 0))
 
@@ -494,13 +552,13 @@ class App(tk.Tk):
             self.export_png()
             return True
         if key == "=":
-            self.preview.zoom_in()
+            self._active_view().zoom_in()
             return True
         if key == "-":
-            self.preview.zoom_out()
+            self._active_view().zoom_out()
             return True
         if key == "0" and not shift:
-            self.preview.fit()
+            self._active_view().fit()
             return True
         if key == "1" and not shift:
             self.design_shape()
@@ -537,6 +595,7 @@ class App(tk.Tk):
         self._paint_menus(self.menubar, c, dark)
         self.editor.set_palette(self.ui_palette)
         self.preview.set_backdrop(self.ui_palette)
+        self.scene.set_backdrop(self.ui_palette)
         self.problems.set_palette(self.ui_palette)
         tooltip.set_palette(self.ui_palette)
         # заголовок с кнопками сворачивания рисует сама Windows
@@ -657,6 +716,10 @@ class App(tk.Tk):
         if not self.dirty:
             self.dirty = True
             self._set_title()
+        if self._position_edit:
+            self._position_edit = False
+            self.render_now()
+            return
         if self.auto_render.get():
             self._schedule_render(380)
 
@@ -672,14 +735,21 @@ class App(tk.Tk):
     def render_now(self) -> None:
         self._render_after = None
         self._seq += 1
-        scale = max(1.0, min(3.0, round(self.preview.zoom, 2)))
-        self.worker.submit(_Job(self._seq, self.editor.get_text(), scale,
-                                self.diagram_theme.get()))
+        text = self.editor.get_text()
+        interactive = bool(self.interactive.get())
+        self._honor = self._honor_manual(text)
+        scale = 1.0 if interactive else max(1.0, min(3.0, round(self.preview.zoom, 2)))
+        self.worker.submit(_Job(
+            self._seq, text, scale, self.diagram_theme.get(),
+            self._honor, interactive,
+        ))
         if not self._busy:
             self._busy = True
             self.status_text.configure(text="Отрисовка…")
 
     def _on_scale_request(self, zoom: float) -> None:
+        if self.interactive.get():
+            return
         self._schedule_render(220)
 
     def _poll_worker(self) -> None:
@@ -695,7 +765,13 @@ class App(tk.Tk):
     def _apply_result(self, job: _Job, result: api.RenderResult) -> None:
         self._busy = False
         self.last_result = result
-        if result.image is not None:
+        self._diagram = result.diagram
+        if job.interactive:
+            if self.interactive.get():
+                self.scene.show(result.diagram, result.error)
+        elif self.interactive.get():
+            pass
+        elif result.image is not None:
             self.preview.set_image(result.image, job.scale)
         elif result.error:
             self.preview.clear()
@@ -716,8 +792,14 @@ class App(tk.Tk):
         if result.error:
             self.status_text.configure(text=f"Ошибка отрисовки: {result.error}")
             return
-        width, height = result.size
-        base = (round(width / job.scale), round(height / job.scale))
+        if result.image is not None:
+            width, height = result.size
+            base = (round(width / max(job.scale, 0.01)),
+                    round(height / max(job.scale, 0.01)))
+        elif result.diagram is not None:
+            base = (round(result.diagram.width), round(result.diagram.height))
+        else:
+            base = (0, 0)
         errors = len(result.errors)
         warnings = len(result.warnings)
         parts = [f"{base[0]}×{base[1]} px", f"{result.duration * 1000:.0f} мс"]
@@ -732,6 +814,103 @@ class App(tk.Tk):
 
     def _on_zoom(self, zoom: float) -> None:
         self.zoom_text.configure(text=f"масштаб {zoom * 100:.0f}%")
+
+    def _active_view(self):
+        return self.scene if self.interactive.get() else self.preview
+
+    def _show_mode(self, render: bool = True) -> None:
+        if self.interactive.get():
+            self.preview.pack_forget()
+            self.scene.pack(fill="both", expand=True)
+        else:
+            self.scene.pack_forget()
+            self.preview.pack(fill="both", expand=True)
+        self._on_zoom(self._active_view().zoom)
+        if render:
+            self.render_now()
+
+    def _sync_lock_caption(self) -> None:
+        locked = bool(self.positions_locked.get())
+        self._lock_button.configure(
+            text="Заблокировать" if locked else "Разблокировать")
+
+    def _on_lock_toggle(self) -> None:
+        self._sync_lock_caption()
+        if self.positions_locked.get():
+            self._status("Положения заблокированы: ручные координаты "
+                         "сохраняются при изменении схемы")
+        else:
+            self._status("Положения разблокированы: при изменении схемы "
+                         "ручные координаты уступают раскладке")
+        self.render_now()
+
+    def _honor_manual(self, text: str) -> bool:
+        """Ручные координаты держатся, пока схема не изменилась или кнопка зажата."""
+        key = schema_text(text)
+        if self._schema_key is None:
+            self._schema_key = key
+            return True
+        changed = key != self._schema_key
+        self._schema_key = key
+        if not changed:
+            return True
+        return bool(self.positions_locked.get())
+
+    def _write_text(self, text: str) -> None:
+        if text == self.editor.get_text():
+            return
+        self._position_edit = True
+        self.editor.replace_text(text)
+
+    def _on_node_moved(self, name: str, x: float, y: float) -> None:
+        self._write_text(set_node_position(self.editor.get_text(), name, x, y))
+
+    def _on_edge_moved(self, index: int, points: list[tuple[float, float]]) -> None:
+        edge = self._edge(index)
+        if edge is None or not points:
+            return
+        self._write_text(set_edge_waypoints(
+            self.editor.get_text(), edge.a, edge.b,
+            edge_ordinal(self._diagram.edges, index), points,
+            src_line=edge.src_line,
+        ))
+
+    def _on_edge_cleared(self, index: int) -> None:
+        edge = self._edge(index)
+        if edge is None:
+            return
+        self._write_text(clear_edge_waypoints(
+            self.editor.get_text(), edge.a, edge.b,
+            edge_ordinal(self._diagram.edges, index), edge.src_line,
+        ))
+
+    def _on_node_lock(self, name: str, locked: bool, x: float, y: float) -> None:
+        self._write_text(set_node_position(
+            self.editor.get_text(), name, x, y, locked=locked))
+        state = "заблокировано" if locked else "снята блокировка"
+        self._status(f"{name}: положение {state}")
+
+    def _on_edge_lock(self, index: int, locked: bool,
+                      points: list[tuple[float, float]]) -> None:
+        edge = self._edge(index)
+        if edge is None:
+            return
+        if not points:
+            self._status("У связи нет узлов. Двойной щелчок по линии добавляет узел")
+            return
+        self._write_text(set_edge_waypoints(
+            self.editor.get_text(), edge.a, edge.b,
+            edge_ordinal(self._diagram.edges, index), points,
+            locked=locked, src_line=edge.src_line,
+        ))
+        state = "заблокировано" if locked else "снята блокировка"
+        self._status(f"Связь {edge.a} → {edge.b}: положение {state}")
+
+    def _edge(self, index: int):
+        diagram = self._diagram
+        if diagram is None or not (0 <= index < len(diagram.edges)):
+            return None
+        return diagram.edges[index]
 
     def _on_cursor(self, row: int, col: int) -> None:
         self.cursor_text.configure(text=f"строка {row}, столбец {col}")
@@ -760,6 +939,7 @@ class App(tk.Tk):
         if not self._confirm_discard():
             return
         self.path = None
+        self._schema_key = None
         self.editor.set_text(STARTER)
         self.dirty = False
         self._set_title()
@@ -782,6 +962,7 @@ class App(tk.Tk):
             return
         self.path = path
         self.settings["last_dir"] = str(path.parent)
+        self._schema_key = None
         self.editor.set_text(text)
         self.dirty = False
         self._set_title()
@@ -841,7 +1022,8 @@ class App(tk.Tk):
         self.update_idletasks()
         try:
             result = api.render_to_file(self.editor.get_text(), str(path),
-                                        scale=scale, supersample=2)
+                                        scale=scale, supersample=2,
+                                        honor_manual=self._honor)
         except Exception as exc:
             messagebox.showerror("Экспорт не удался", str(exc), parent=self)
             return
@@ -883,11 +1065,12 @@ class App(tk.Tk):
     def load_example(self, name: str) -> None:
         if not self._confirm_discard():
             return
+        self._schema_key = None
         self.editor.set_text(EXAMPLES[name])
         self.path = None
         self.dirty = False
         self._set_title()
-        self.preview.fit()
+        self._active_view().fit()
         self.render_now()
 
     def show_help(self) -> None:
@@ -915,6 +1098,8 @@ class App(tk.Tk):
             "auto_render": bool(self.auto_render.get()),
             "export_scale": int(self.export_scale.get()),
             "editor_font": self.editor.font_size(),
+            "interactive": bool(self.interactive.get()),
+            "positions_locked": bool(self.positions_locked.get()),
         })
         try:
             self.settings["sash"] = self.panes.sashpos(0)
