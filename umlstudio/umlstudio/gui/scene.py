@@ -5,10 +5,36 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from ..geometry import border_point, is_orthogonal, orthogonalize
 from ..model import Diagram, Edge, Group, Node
+from ..positions import edge_ordinal
 from ..style import StyleResolver
 from ..theme import get_theme, to_hex
 from .preview import BACKDROPS, ZOOM_STEPS
+
+def _same_path(left: list[tuple[float, float]], right: list[tuple[float, float]],
+               tol: float = 0.6) -> bool:
+    if len(left) != len(right):
+        return False
+    return all(abs(a[0] - b[0]) <= tol and abs(a[1] - b[1]) <= tol
+               for a, b in zip(left, right))
+
+
+def _longest_midpoint(points: list[tuple[float, float]]
+                      ) -> tuple[tuple[float, float], int]:
+    best_len = -1.0
+    mid = points[0]
+    at = 1
+    for index in range(len(points) - 1):
+        dx = points[index + 1][0] - points[index][0]
+        dy = points[index + 1][1] - points[index][1]
+        length = (dx * dx + dy * dy) ** 0.5
+        if length > best_len:
+            best_len = length
+            mid = (points[index][0] + dx / 2, points[index][1] + dy / 2)
+            at = index + 1
+    return mid, at
+
 
 def _segment_distance(start: tuple[float, float], end: tuple[float, float],
                       point: tuple[float, float]) -> float:
@@ -26,8 +52,10 @@ def _segment_distance(start: tuple[float, float], end: tuple[float, float],
 
 HINT = (
     "Интерактивная область\n"
-    "Перетащите блок или узел связи\n"
-    "Двойной щелчок по линии добавляет узел\n"
+    "Щелчок выбирает блок, связь или точку\n"
+    "На границе блока — точки входа и выхода\n"
+    "Кнопки «Добавить точку» и «Удалить точку»\n"
+    "Подпись связи можно перетащить\n"
     "Правый щелчок блокирует объект"
 )
 
@@ -37,6 +65,8 @@ class InteractiveCanvas(ttk.Frame):
 
     def __init__(self, master, on_node_moved=None, on_edge_moved=None,
                  on_edge_cleared=None, on_node_lock=None, on_edge_lock=None,
+                 on_ports=None, on_edge_end=None, on_label=None,
+                 on_orthogonal=None, on_message=None,
                  on_zoom_change=None) -> None:
         super().__init__(master)
         self._on_node_moved = on_node_moved
@@ -44,7 +74,13 @@ class InteractiveCanvas(ttk.Frame):
         self._on_edge_cleared = on_edge_cleared
         self._on_node_lock = on_node_lock
         self._on_edge_lock = on_edge_lock
+        self._on_ports = on_ports
+        self._on_edge_end = on_edge_end
+        self._on_label = on_label
+        self._on_orthogonal = on_orthogonal
+        self._on_message = on_message
         self._on_zoom_change = on_zoom_change
+        self._selection: tuple | None = None
 
         self.zoom = 1.0
         self._fit_mode = True
@@ -86,6 +122,8 @@ class InteractiveCanvas(ttk.Frame):
         self.canvas.bind("<ButtonPress-3>", self._popup)
         self.canvas.bind("<ButtonPress-2>", self._press_pan)
         self.canvas.bind("<B2-Motion>", self._pan_motion)
+        self.canvas.bind("<Delete>", self._on_delete_key)
+        self.canvas.bind("<BackSpace>", self._on_delete_key)
 
     def set_backdrop(self, palette: str) -> None:
         self._palette = palette
@@ -171,6 +209,13 @@ class InteractiveCanvas(ttk.Frame):
             self._draw_node(index, node)
         for index, edge in enumerate(diagram.edges):
             self._draw_handles(index, edge)
+            self._draw_ends(index, edge)
+        for index, node in enumerate(diagram.nodes.values()):
+            self._draw_ports(node, index, group=False)
+        for index, group in enumerate(self._groups_back_to_front(diagram)):
+            self._draw_ports(group, index, group=True)
+        self._draw_chrome()
+        self.canvas.tag_raise("point")
         self.canvas.configure(scrollregion=(0, 0, view_w, view_h))
         self.canvas.tag_raise("hint")
 
@@ -200,9 +245,13 @@ class InteractiveCanvas(ttk.Frame):
         st = self._style.node_style(node)
         tag = f"n:{index}"
         x0, y0, x1, y1 = self._box(node.x, node.y, node.w, node.h)
+        stroke = to_hex(st["stroke"])
+        width = float(st["stroke_width"]) * self.zoom
+        if self._selection == ("node", node.name):
+            stroke = "#1565c0"
+            width = max(width, 2.4 * self.zoom)
         self._shape(st["form"], x0, y0, x1, y1, to_hex(st["fill"]),
-                    to_hex(st["stroke"]), float(st["stroke_width"]) * self.zoom,
-                    bool(st["dashed"]), tag)
+                    stroke, width, bool(st["dashed"]), tag)
         self._draw_rows(node, x0, y0, x1, y1, tag, to_hex(st["stroke"]))
         if node.locked:
             self.canvas.create_oval(
@@ -272,6 +321,82 @@ class InteractiveCanvas(ttk.Frame):
             return
         self.canvas.create_rectangle(x0, y0, x1, y1, **kw)
 
+    def _edge_selected(self, index: int) -> bool:
+        if self._diagram is None or self._selection is None:
+            return False
+        if self._selection[0] != "edge":
+            return False
+        edge = self._diagram.edges[index]
+        return self._selection[1:] == (edge.a, edge.b, edge_ordinal(self._diagram.edges, index))
+
+    def _point_selected(self, logical: tuple) -> bool:
+        return self._selection == logical
+
+    def _draw_ends(self, index: int, edge: Edge) -> None:
+        if len(edge.points) < 2 or self._diagram is None:
+            return
+        key = (edge.a, edge.b, edge_ordinal(self._diagram.edges, index))
+        self._mark_point(index, 0, edge.points[0], "exit", key, "#2e7d32")
+        self._mark_point(index, 1, edge.points[-1], "entry", key, "#1565c0")
+
+    def _draw_ports(self, obj, index: int, group: bool) -> None:
+        if not getattr(obj, "ports", None):
+            return
+        scale = self._layout_scale()
+        host = "g" if group else "n"
+        for port_index, (dx, dy) in enumerate(obj.ports):
+            abs_x = obj.x + dx * scale
+            abs_y = obj.y + dy * scale
+            form = "rect" if group else self._style.node_style(obj)["form"]
+            border = border_point(form, obj.box(), (abs_x, abs_y))
+            logical = ("port", obj.name, port_index)
+            selected = self._point_selected(logical)
+            self._paint_dot(
+                border, "#6a1b9a", selected,
+                (f"p:{host}:{index}:{port_index}", "point", "port"),
+            )
+
+    def _mark_point(self, index: int, which: int, point: tuple[float, float],
+                    role: str, key: tuple, fill: str) -> None:
+        logical = (role, *key)
+        selected = self._point_selected(logical)
+        self._paint_dot(
+            point, fill, selected,
+            (f"x:{index}:{which}", "point", role),
+        )
+
+    def _paint_dot(self, point: tuple[float, float], fill: str, selected: bool,
+                   tags: tuple[str, ...]) -> None:
+        cx, cy = self._to_canvas(*point)
+        radius = max(5, 6 * self.zoom)
+        if selected:
+            radius += 3
+            fill = "#fff8e1"
+        outline = "#f9a825" if selected else "#ffffff"
+        width = 3 if selected else 1
+        item_tags = ("item", *tags)
+        self.canvas.create_oval(
+            cx - radius, cy - radius, cx + radius, cy + radius,
+            fill=fill, outline=outline, width=width, tags=item_tags,
+        )
+
+    def _draw_chrome(self) -> None:
+        if self._selection == ("group",) or (
+                self._selection and self._selection[0] == "group"
+                and self._diagram is not None):
+            name = self._selection[1]
+            group = self._diagram.groups.get(name) if self._diagram else None
+            if group is None:
+                return
+            x0, y0, x1, y1 = self._box(group.x, group.y, group.w, group.h)
+            tags = ["item", "chrome", "group"]
+            if name in self._group_names:
+                tags.append(f"g:{self._group_names.index(name)}")
+            self.canvas.create_rectangle(
+                x0 - 2, y0 - 2, x1 + 2, y1 + 2, outline="#1565c0", width=2,
+                tags=tuple(tags),
+            )
+
     def _draw_edge(self, index: int, edge: Edge) -> None:
         assert self._style is not None and self._diagram is not None
         st = self._style.edge_style(edge)
@@ -283,6 +408,9 @@ class InteractiveCanvas(ttk.Frame):
             flat.extend((cx, cy))
         color = to_hex(st["color"])
         width = max(1.4, float(st["width"])) * max(0.8, self.zoom)
+        if self._edge_selected(index):
+            color = "#1565c0"
+            width += 1.6 * self.zoom
         dash = None
         if st["line"] == "dashed":
             dash = (8, 5)
@@ -296,13 +424,31 @@ class InteractiveCanvas(ttk.Frame):
             capstyle="round", joinstyle="round", dash=dash, tags=tags,
         )
         self._edge_line[index] = line
-        if edge.label and edge.label_pos:
-            lx, ly = self._to_canvas(*edge.label_pos)
-            self.canvas.create_text(
-                lx, ly, text=edge.label, fill=to_hex(st["label_color"]),
-                font=("Segoe UI", max(7, int(11 * self.zoom))), tags=tags,
-            )
+        self._draw_label(index, edge, st)
         self._multiplicity(edge, flat, st)
+
+    def _draw_label(self, index: int, edge: Edge, st: dict) -> None:
+        if not edge.label or not edge.label_pos or self._diagram is None:
+            return
+        lx, ly = self._to_canvas(*edge.label_pos)
+        key = (edge.a, edge.b, edge_ordinal(self._diagram.edges, index))
+        selected = self._point_selected(("label", *key))
+        tags = ("item", f"l:{index}", "label")
+        text = self.canvas.create_text(
+            lx, ly, text=edge.label, fill=to_hex(st["label_color"]),
+            font=("Segoe UI", max(7, int(11 * self.zoom))), tags=tags,
+        )
+        if not selected:
+            return
+        box = self.canvas.bbox(text)
+        if box is None:
+            return
+        pad = 3
+        self.canvas.create_rectangle(
+            box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad,
+            outline="#f9a825", width=2, tags=tags,
+        )
+        self.canvas.tag_raise(text)
 
     def _multiplicity(self, edge: Edge, flat: list[float], st: dict) -> None:
         pairs = ((edge.a_mult, 0), (edge.b_mult, len(flat) - 4))
@@ -321,13 +467,18 @@ class InteractiveCanvas(ttk.Frame):
         if len(edge.points) < 3:
             return
         color = "#c62828" if edge.locked else "#1565c0"
+        key = (edge.a, edge.b, edge_ordinal(self._diagram.edges, index)) if self._diagram else None
         for point_index, (px, py) in enumerate(edge.points[1:-1], start=1):
             cx, cy = self._to_canvas(px, py)
             radius = max(4, 5 * self.zoom)
+            fill, outline, width = color, "#ffffff", 1
+            if key is not None and self._point_selected(("bend", *key, point_index - 1)):
+                fill, outline, width = "#fff8e1", "#f9a825", 3
+                radius += 3
             self.canvas.create_oval(
                 cx - radius, cy - radius, cx + radius, cy + radius,
-                fill=color, outline="#ffffff", width=1,
-                tags=("item", f"h:{index}:{point_index}", "handle"),
+                fill=fill, outline=outline, width=width,
+                tags=("item", f"h:{index}:{point_index}", "handle", "point"),
             )
 
     def _box(self, x: float, y: float, w: float, h: float
@@ -414,11 +565,19 @@ class InteractiveCanvas(ttk.Frame):
 
     def _kind(self, tags: tuple[str, ...]) -> tuple[str, tuple[int, ...]] | None:
         for tag in tags:
+            if tag.startswith("x:"):
+                edge, which = tag[2:].split(":")
+                return ("exit" if which == "0" else "entry"), (int(edge),)
+            if tag.startswith("p:"):
+                host, index, port = tag[2:].split(":")
+                return "port", (host, int(index), int(port))
             if tag.startswith("h:"):
                 edge, point = tag[2:].split(":")
                 return "handle", (int(edge), int(point))
             if tag.startswith("n:"):
                 return "node", (int(tag[2:]),)
+            if tag.startswith("l:"):
+                return "label", (int(tag[2:]),)
             if tag.startswith("e:"):
                 return "edge", (int(tag[2:]),)
             if tag.startswith("g:"):
@@ -426,7 +585,9 @@ class InteractiveCanvas(ttk.Frame):
         return None
 
     def _press(self, event) -> None:
+        self.canvas.focus_set()
         kind = self._kind(self._tags(event))
+        self._remember(kind)
         cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
         if kind is None or kind[0] == "group":
             self._drag = {"mode": "pan", "x": event.x, "y": event.y}
@@ -439,9 +600,9 @@ class InteractiveCanvas(ttk.Frame):
         self._dragging = True
         self._fit_mode = False
         self._drag = {"mode": mode, "x": cx, "y": cy, "data": data, "dx": 0.0, "dy": 0.0}
-        if mode == "node":
+        if mode in ("node", "label"):
             self.canvas.configure(cursor="fleur")
-        elif mode == "handle":
+        elif mode in ("handle", "exit", "entry", "port"):
             self.canvas.configure(cursor="crosshair")
 
     def _press_pan(self, event) -> None:
@@ -470,6 +631,14 @@ class InteractiveCanvas(ttk.Frame):
         elif self._drag["mode"] == "handle":
             edge_index, point_index = self._drag["data"]
             self._move_handle(edge_index, point_index, dx, dy)
+        elif self._drag["mode"] in ("exit", "entry"):
+            edge_index = self._drag["data"][0]
+            which = 0 if self._drag["mode"] == "exit" else 1
+            self._move_end(edge_index, which, dx, dy)
+        elif self._drag["mode"] == "port":
+            self._move_tagged(f"p:{self._drag['data'][0]}:{self._drag['data'][1]}:{self._drag['data'][2]}", dx, dy)
+        elif self._drag["mode"] == "label":
+            self._move_tagged(f"l:{self._drag['data'][0]}", dx, dy)
 
     def _shift_edges(self, node_index: int, dx: float, dy: float) -> None:
         if self._diagram is None:
@@ -524,21 +693,34 @@ class InteractiveCanvas(ttk.Frame):
         self._drag = None
         self._dragging = False
         self.canvas.configure(cursor="")
-        if not drag or drag["mode"] == "pan" or self._diagram is None:
+        if not drag or self._diagram is None:
             self._flush_pending()
             return
-        if drag["mode"] == "node" and (abs(drag["dx"]) > 1 or abs(drag["dy"]) > 1):
+        if drag["mode"] == "pan":
+            self._paint(self._diagram, "")
+            self._flush_pending()
+            return
+        moved = abs(drag["dx"]) > 1 or abs(drag["dy"]) > 1
+        if drag["mode"] == "node" and moved:
             index = drag["data"][0]
             node = list(self._diagram.nodes.values())[index]
             x, y = self._unscaled(node.x + drag["dx"] / self.zoom,
                                   node.y + drag["dy"] / self.zoom)
             if self._on_node_moved:
                 self._on_node_moved(node.name, x, y)
-        elif drag["mode"] == "handle" and (abs(drag["dx"]) > 1 or abs(drag["dy"]) > 1):
+        elif drag["mode"] == "handle" and moved:
             edge_index = drag["data"][0]
             points = self._interior(edge_index)
             if points and self._on_edge_moved:
                 self._on_edge_moved(edge_index, points)
+        elif drag["mode"] in ("exit", "entry") and moved:
+            self._commit_end(drag["data"][0], drag["mode"])
+        elif drag["mode"] == "port" and moved:
+            self._commit_port(drag["data"])
+        elif drag["mode"] == "label" and moved:
+            self._commit_label(drag["data"][0])
+        elif not moved:
+            self._paint(self._diagram, "")
         self._flush_pending()
 
     def _interior(self, edge_index: int) -> list[tuple[float, float]]:
@@ -551,7 +733,20 @@ class InteractiveCanvas(ttk.Frame):
 
     def _double(self, event) -> str:
         kind = self._kind(self._tags(event))
-        if kind is None or kind[0] != "edge" or self._diagram is None:
+        if self._diagram is None:
+            return "break"
+        if kind is not None and kind[0] in ("node", "group"):
+            cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+            abs_x = (cx - self._ox) / self.zoom
+            abs_y = (cy - self._oy) / self.zoom
+            if kind[0] == "node":
+                obj = list(self._diagram.nodes.values())[kind[1][0]]
+            else:
+                obj = self._diagram.groups.get(self._group_names[kind[1][0]])
+            if obj is not None:
+                self._add_port(obj, self._snap_offset(obj, abs_x, abs_y))
+            return "break"
+        if kind is None or kind[0] != "edge":
             if kind is None:
                 self.fit()
             return "break"
@@ -585,8 +780,15 @@ class InteractiveCanvas(ttk.Frame):
         if self._diagram is None:
             return "break"
         kind = self._kind(self._tags(event))
+        self._remember(kind)
         self._menu.delete(0, "end")
+        self._menu.add_command(label="Добавить точку", command=self.add_point)
+        self._menu.add_command(label="Удалить точку", command=self.delete_point)
+        self._menu.add_command(label="Удалить все узлы", command=self.clear_bends)
+        self._menu.add_command(label="Сделать ортогональной", command=self.orthogonalize)
+        self._menu.add_separator()
         if kind is None:
+            self._menu.tk_popup(event.x_root, event.y_root)
             return "break"
         mode, data = kind
         if mode == "node":
@@ -607,7 +809,7 @@ class InteractiveCanvas(ttk.Frame):
                 label=label,
                 command=lambda: self._lock_group(group, not group.locked),
             )
-        elif mode in ("edge", "handle"):
+        elif mode in ("edge", "handle", "exit", "entry"):
             edge_index = data[0]
             edge = self._diagram.edges[edge_index]
             label = "Снять блокировку" if edge.locked else "Заблокировать положение"
@@ -621,8 +823,6 @@ class InteractiveCanvas(ttk.Frame):
                     label="Удалить узел",
                     command=lambda: self._delete_handle(edge_index, point_index),
                 )
-        else:
-            return "break"
         self._menu.tk_popup(event.x_root, event.y_root)
         return "break"
 
@@ -658,6 +858,315 @@ class InteractiveCanvas(ttk.Frame):
             self._on_edge_moved(edge_index, points)
         elif self._on_edge_cleared:
             self._on_edge_cleared(edge_index)
+
+    def add_point(self) -> None:
+        """Добавляет точку на выбранный блок или узел на выбранной связи."""
+        if self._diagram is None:
+            return
+        sel = self._selection
+        if sel is None:
+            self._say("Выберите блок, связь или точку")
+            return
+        if sel[0] in ("node", "group", "port"):
+            obj = self._host_obj(sel[1])
+            if obj is None:
+                return
+            count = len(obj.ports)
+            place_x = obj.x + obj.w + 2
+            place_y = obj.y + obj.h * (count + 1) / (count + 2)
+            self._add_port(obj, self._snap_offset(obj, place_x, place_y))
+            return
+        found = self._edge_from_selection()
+        if found is None:
+            self._say("Выберите блок, связь или точку")
+            return
+        index, edge = found
+        points = [self._unscaled(px, py) for px, py in edge.points]
+        if sel[0] == "bend" and 0 <= sel[4] < len(points) - 2:
+            at = sel[4] + 2
+            base = points[sel[4] + 1]
+            points.insert(at, (base[0] + 18, base[1] + 18))
+            interior_index = sel[4] + 1
+        else:
+            mid, at = _longest_midpoint(points)
+            points.insert(at, mid)
+            interior_index = at - 1
+        self._selection = ("bend", edge.a, edge.b, sel[3], interior_index)
+        if self._on_edge_moved:
+            self._on_edge_moved(index, points[1:-1])
+
+    def delete_point(self) -> None:
+        """Удаляет выбранную точку. Связь и блок остаются."""
+        if self._diagram is None or self._selection is None:
+            self._say("Выберите точку, которую нужно удалить")
+            return
+        sel = self._selection
+        if sel[0] == "port":
+            obj = self._host_obj(sel[1])
+            if obj is None or not (0 <= sel[2] < len(obj.ports)):
+                return
+            ports = list(obj.ports)
+            del ports[sel[2]]
+            kind = "group" if sel[1] in self._diagram.groups else "node"
+            self._selection = (kind, sel[1])
+            if self._on_ports:
+                self._on_ports(sel[1], ports)
+            return
+        if sel[0] == "edge":
+            self.clear_bends()
+            return
+        found = self._edge_from_selection()
+        if found is None:
+            self._say("Выберите точку, которую нужно удалить")
+            return
+        index, edge = found
+        if sel[0] == "bend":
+            points = [self._unscaled(px, py) for px, py in edge.points[1:-1]]
+            if 0 <= sel[4] < len(points):
+                del points[sel[4]]
+            self._selection = ("edge", edge.a, edge.b, sel[3])
+            if points and self._on_edge_moved:
+                self._on_edge_moved(index, points)
+            elif self._on_edge_cleared:
+                self._on_edge_cleared(index)
+            return
+        if sel[0] in ("exit", "entry"):
+            manual = edge.exit_at if sel[0] == "exit" else edge.entry_at
+            if manual is None:
+                self._say("Эта точка рассчитана автоматически. Сдвиньте её, чтобы закрепить")
+                return
+            self._selection = ("edge", edge.a, edge.b, sel[3])
+            if self._on_edge_end:
+                self._on_edge_end(index, sel[0], None)
+            return
+        self._say("Выберите точку, которую нужно удалить")
+
+    def clear_bends(self) -> None:
+        """Убирает все промежуточные узлы выбранной связи."""
+        found = self._edge_from_selection()
+        if found is None:
+            self._say("Выберите связь, у которой нужно убрать узлы")
+            return
+        index, edge = found
+        if not edge.waypoints:
+            self._say("У связи нет промежуточных узлов")
+            return
+        self._selection = ("edge", edge.a, edge.b, self._selection[3])
+        if self._on_edge_cleared:
+            self._on_edge_cleared(index)
+        self._say(f"Узлы связи {edge.a} → {edge.b} убраны")
+
+    def orthogonalize(self) -> None:
+        """Выравнивает изменённые связи, сдвигая узлы как можно меньше."""
+        if self._diagram is None:
+            return
+        if self._selection and self._selection[0] in ("edge", "bend", "exit", "entry", "label"):
+            found = self._edge_from_selection()
+            targets = [found[0]] if found else []
+        elif self._selection is not None:
+            self._say("Выберите связь, которую нужно выровнять")
+            return
+        else:
+            targets = [index for index, edge in enumerate(self._diagram.edges)
+                       if edge.waypoints]
+            if not targets:
+                self._say("Нет изменённых связей. Выберите связь, чтобы выровнять её")
+                return
+        specs = []
+        for index in targets:
+            spec = self._orthogonal_spec(index)
+            if spec is not None:
+                specs.append(spec)
+        if not specs:
+            self._say("Связи уже ортогональны")
+            return
+        if self._on_orthogonal:
+            self._on_orthogonal(specs)
+        self._say("Связи выровнены по горизонтали и вертикали")
+
+    def _orthogonal_spec(self, index: int):
+        assert self._diagram is not None
+        edge = self._diagram.edges[index]
+        if len(edge.points) < 2 or is_orthogonal(edge.points):
+            return None
+        routed = orthogonalize(edge.points)
+        if is_orthogonal(edge.points) or _same_path(edge.points, routed):
+            return None
+        interior = [self._unscaled(px, py) for px, py in routed[1:-1]]
+        if not interior:
+            mid = ((routed[0][0] + routed[-1][0]) / 2,
+                   (routed[0][1] + routed[-1][1]) / 2)
+            interior = [self._unscaled(*mid)]
+        left = self._host_obj(edge.a)
+        right = self._host_obj(edge.b)
+        if left is None or right is None:
+            return None
+        return (
+            index,
+            interior,
+            self._snap_offset(left, routed[0][0], routed[0][1]),
+            self._snap_offset(right, routed[-1][0], routed[-1][1]),
+        )
+
+    def _on_delete_key(self, _event) -> str:
+        self.delete_point()
+        return "break"
+
+    def _remember(self, kind) -> None:
+        if kind is None or self._diagram is None:
+            self._selection = None
+            self._say("Ничего не выбрано")
+            return
+        mode, data = kind
+        if mode == "node":
+            node = list(self._diagram.nodes.values())[data[0]]
+            self._selection = ("node", node.name)
+            self._say(f"Выбран блок {node.name}. «Добавить точку» ставит точку на его границу")
+            return
+        if mode == "group":
+            name = self._group_names[data[0]]
+            self._selection = ("group", name)
+            self._say(f"Выбран пакет {name}. «Добавить точку» ставит точку на его границу")
+            return
+        if mode == "edge":
+            edge = self._diagram.edges[data[0]]
+            ordinal = edge_ordinal(self._diagram.edges, data[0])
+            self._selection = ("edge", edge.a, edge.b, ordinal)
+            self._say(f"Выбрана связь {edge.a} → {edge.b}. «Удалить узлы» убирает промежуточные точки")
+            return
+        if mode == "label":
+            edge = self._diagram.edges[data[0]]
+            ordinal = edge_ordinal(self._diagram.edges, data[0])
+            self._selection = ("label", edge.a, edge.b, ordinal)
+            self._say(f"Выбрана подпись связи {edge.a} → {edge.b}. Её можно перетащить")
+            return
+        if mode == "handle":
+            edge = self._diagram.edges[data[0]]
+            ordinal = edge_ordinal(self._diagram.edges, data[0])
+            self._selection = ("bend", edge.a, edge.b, ordinal, data[1] - 1)
+            self._say("Выбран узел связи. Его можно сдвинуть или удалить")
+            return
+        if mode in ("exit", "entry"):
+            edge = self._diagram.edges[data[0]]
+            ordinal = edge_ordinal(self._diagram.edges, data[0])
+            self._selection = (mode, edge.a, edge.b, ordinal)
+            word = "выхода" if mode == "exit" else "входа"
+            self._say(f"Выбрана точка {word}. Её можно сдвинуть по границе или удалить")
+            return
+        if mode == "port":
+            name = self._host_name(data[0], data[1])
+            self._selection = ("port", name, data[2])
+            self._say("Выбрана точка блока. Её можно сдвинуть или удалить")
+
+    def _host_name(self, host: str, index: int) -> str:
+        if host == "g":
+            return self._group_names[index]
+        assert self._diagram is not None
+        return list(self._diagram.nodes)[index]
+
+    def _host_obj(self, name: str):
+        assert self._diagram is not None
+        if name in self._diagram.nodes:
+            return self._diagram.nodes[name]
+        return self._diagram.groups.get(name)
+
+    def _edge_from_selection(self):
+        sel = self._selection
+        if self._diagram is None or sel is None or sel[0] not in (
+                "edge", "bend", "exit", "entry", "label"):
+            return None
+        seen = 0
+        for index, edge in enumerate(self._diagram.edges):
+            if edge.a == sel[1] and edge.b == sel[2]:
+                seen += 1
+                if seen == sel[3]:
+                    return index, edge
+        return None
+
+    def _add_port(self, obj, offset: tuple[float, float]) -> None:
+        ports = list(obj.ports)
+        ports.append(offset)
+        self._selection = ("port", obj.name, len(ports) - 1)
+        if self._on_ports:
+            self._on_ports(obj.name, ports)
+
+    def _move_end(self, edge_index: int, which: int, dx: float, dy: float) -> None:
+        line = self._edge_line.get(edge_index)
+        if line is not None:
+            coords = list(self.canvas.coords(line))
+            slot = 0 if which == 0 else len(coords) - 2
+            coords[slot] += dx
+            coords[slot + 1] += dy
+            self.canvas.coords(line, *coords)
+        self._move_tagged(f"x:{edge_index}:{which}", dx, dy)
+
+    def _move_tagged(self, tag: str, dx: float, dy: float) -> None:
+        for item in self.canvas.find_withtag(tag):
+            self.canvas.move(item, dx, dy)
+
+    def _commit_end(self, edge_index: int, role: str) -> None:
+        which = 0 if role == "exit" else 1
+        items = self.canvas.find_withtag(f"x:{edge_index}:{which}")
+        if not items or self._diagram is None or not self._on_edge_end:
+            return
+        box = self.canvas.coords(items[0])
+        abs_x = ((box[0] + box[2]) / 2 - self._ox) / self.zoom
+        abs_y = ((box[1] + box[3]) / 2 - self._oy) / self.zoom
+        edge = self._diagram.edges[edge_index]
+        name = edge.a if role == "exit" else edge.b
+        obj = self._host_obj(name)
+        if obj is None:
+            return
+        self._on_edge_end(edge_index, role, self._snap_offset(obj, abs_x, abs_y))
+
+    def _commit_port(self, data) -> None:
+        host, index, port_index = data
+        if self._diagram is None or not self._on_ports:
+            return
+        name = self._host_name(host, index)
+        obj = self._host_obj(name)
+        items = self.canvas.find_withtag(f"p:{host}:{index}:{port_index}")
+        if obj is None or not items or not (0 <= port_index < len(obj.ports)):
+            return
+        box = self.canvas.coords(items[0])
+        abs_x = ((box[0] + box[2]) / 2 - self._ox) / self.zoom
+        abs_y = ((box[1] + box[3]) / 2 - self._oy) / self.zoom
+        ports = list(obj.ports)
+        ports[port_index] = self._snap_offset(obj, abs_x, abs_y)
+        self._on_ports(name, ports)
+
+    def _commit_label(self, edge_index: int) -> None:
+        if self._diagram is None or not self._on_label:
+            return
+        texts = [item for item in self.canvas.find_withtag(f"l:{edge_index}")
+                 if self.canvas.type(item) == "text"]
+        if not texts:
+            return
+        box = self.canvas.bbox(texts[0])
+        if not box:
+            return
+        abs_x = ((box[0] + box[2]) / 2 - self._ox) / self.zoom
+        abs_y = ((box[1] + box[3]) / 2 - self._oy) / self.zoom
+        edge = self._diagram.edges[edge_index]
+        anchor = edge.label_anchor or edge.label_pos
+        if anchor is None:
+            return
+        offset = self._unscaled(abs_x - anchor[0], abs_y - anchor[1])
+        if abs(offset[0]) < 0.4 and abs(offset[1]) < 0.4:
+            offset = None
+        self._on_label(edge_index, offset)
+
+    def _snap_offset(self, obj, abs_x: float, abs_y: float) -> tuple[float, float]:
+        if isinstance(obj, Group) or self._style is None:
+            form = "rect"
+        else:
+            form = self._style.node_style(obj)["form"]
+        border = border_point(form, obj.box(), (abs_x, abs_y))
+        return self._unscaled(border[0] - obj.x, border[1] - obj.y)
+
+    def _say(self, text: str) -> None:
+        if self._on_message:
+            self._on_message(text)
 
     def _flush_pending(self) -> None:
         pending = getattr(self, "_pending", None)

@@ -8,7 +8,17 @@ from __future__ import annotations
 
 import re
 
-from .parser import AT_LINE, AT_SUFFIX, DECL, VIA_ATTR, VIA_LINE, has_lock
+from .parser import (
+    AT_LINE,
+    AT_SUFFIX,
+    DECL,
+    END_LINE,
+    LABEL_LINE,
+    PORTS_LINE,
+    VIA_ATTR,
+    VIA_LINE,
+    has_lock,
+)
 
 _BARE = re.compile(r"^[A-Za-z0-9_\u0400-\u04FF][A-Za-z0-9_\u0400-\u04FF.:$]*$")
 
@@ -17,7 +27,10 @@ def schema_text(text: str) -> str:
     """Текст без координат: по нему видно, изменилась ли сама схема."""
     kept: list[str] = []
     for line in text.splitlines():
-        if AT_LINE.match(line.strip()) or VIA_LINE.match(line.strip()):
+        stripped = line.strip()
+        if (AT_LINE.match(stripped) or VIA_LINE.match(stripped)
+                or PORTS_LINE.match(stripped) or END_LINE.match(stripped)
+                or LABEL_LINE.match(stripped)):
             continue
         cleaned = AT_SUFFIX.sub("", line)
         cleaned = VIA_ATTR.sub("", cleaned)
@@ -87,6 +100,73 @@ def clear_edge_waypoints(text: str, source: str, target: str, ordinal: int,
     return _join(lines, newline, ends)
 
 
+def set_node_ports(text: str, name: str,
+                   points: list[tuple[float, float]]) -> str:
+    """Записывает точки на границе блока. Пустой список строку убирает."""
+    lines, newline, ends = _split(text)
+    kept = [line for line in lines if not _port_names(line, name)]
+    if points:
+        body = "; ".join(f"{_fmt_num(px)}, {_fmt_num(py)}" for px, py in points)
+        kept = _insert(kept, f"ports {_fmt_name(name)} {body}")
+    return _join(kept, newline, ends)
+
+
+def set_edge_end(text: str, kind: str, source: str, target: str, ordinal: int,
+                 point: tuple[float, float]) -> str:
+    """Записывает точку выхода (exit) или входа (entry) связи."""
+    lines, newline, ends = _split(text)
+    written = (f"{kind} {_fmt_name(source)} {_fmt_name(target)} #{ordinal} "
+               f"{_fmt_num(point[0])}, {_fmt_num(point[1])}")
+    found = None
+    for index, line in enumerate(lines):
+        if _end_names(line, kind, source, target, ordinal):
+            found = index
+            break
+    if found is None:
+        lines = _insert(lines, written)
+    else:
+        lines[found] = written
+    return _join(lines, newline, ends)
+
+
+def clear_edge_end(text: str, kind: str, source: str, target: str,
+                   ordinal: int) -> str:
+    """Убирает ручную точку входа или выхода: конец снова считает раскладка."""
+    lines, newline, ends = _split(text)
+    lines = [line for line in lines
+             if not _end_names(line, kind, source, target, ordinal)]
+    return _join(lines, newline, ends)
+
+
+def set_edge_label_offset(text: str, source: str, target: str, ordinal: int,
+                          offset: tuple[float, float] | None) -> str:
+    """Записывает сдвиг подписи относительно связи. None строку убирает."""
+    lines, newline, ends = _split(text)
+    kept = [line for line in lines
+            if not _label_names(line, source, target, ordinal)]
+    if offset is not None:
+        written = (f"labelat {_fmt_name(source)} {_fmt_name(target)} #{ordinal} "
+                   f"{_fmt_num(offset[0])}, {_fmt_num(offset[1])}")
+        kept = _insert(kept, written)
+    return _join(kept, newline, ends)
+
+
+def set_edge_geometry(text: str, source: str, target: str, ordinal: int,
+                      waypoints: list[tuple[float, float]],
+                      exit_at: tuple[float, float],
+                      entry_at: tuple[float, float],
+                      src_line: int | None = None) -> str:
+    """Записывает ортогональный маршрут: узлы и точки входа и выхода."""
+    if waypoints:
+        text = set_edge_waypoints(
+            text, source, target, ordinal, waypoints, src_line=src_line)
+    else:
+        text = clear_edge_waypoints(
+            text, source, target, ordinal, src_line=src_line)
+    text = set_edge_end(text, "exit", source, target, ordinal, exit_at)
+    return set_edge_end(text, "entry", source, target, ordinal, entry_at)
+
+
 def edge_ordinal(edges, index: int) -> int:
     """Номер связи среди рёбер с теми же концами, начиная с 1."""
     edge = edges[index]
@@ -118,6 +198,36 @@ def _flag(line: str, locked: bool | None, at_line: bool) -> str:
 def _at_names(line: str, name: str) -> bool:
     found = AT_LINE.match(line.strip())
     return bool(found) and _unquote(found.group("name")) == name
+
+
+def _port_names(line: str, name: str) -> bool:
+    found = PORTS_LINE.match(line.strip())
+    return bool(found) and _unquote(found.group("name")) == name
+
+
+def _end_names(line: str, kind: str, source: str, target: str, ordinal: int) -> bool:
+    found = END_LINE.match(line.strip())
+    if not found:
+        return False
+    word = found.group("kind").lower()
+    same = (kind == "exit" and word in ("exit", "выход")) or (
+        kind == "entry" and word in ("entry", "вход"))
+    if not same:
+        return False
+    if _unquote(found.group("a")) != source or _unquote(found.group("b")) != target:
+        return False
+    number = int(found.group("n")) if found.group("n") else 1
+    return number == ordinal
+
+
+def _label_names(line: str, source: str, target: str, ordinal: int) -> bool:
+    found = LABEL_LINE.match(line.strip())
+    if not found:
+        return False
+    if _unquote(found.group("a")) != source or _unquote(found.group("b")) != target:
+        return False
+    number = int(found.group("n")) if found.group("n") else 1
+    return number == ordinal
 
 
 def _via_names(line: str, source: str, target: str, ordinal: int) -> bool:

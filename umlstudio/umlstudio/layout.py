@@ -942,7 +942,7 @@ def layout_diagram(diagram: Diagram, style: StyleResolver,
     _route_notowning(diagram, opts, style)
     _fit_outside(diagram, opts.padding, origin[1])
     attach_shape_ends(diagram, style)
-    _place_labels(diagram, style, opts)
+    _place_labels(diagram, style, opts, honor_manual)
 
     width, height = _bounds(diagram, style)
     width += opts.padding
@@ -951,6 +951,11 @@ def layout_diagram(diagram: Diagram, style: StyleResolver,
         _shift_all(diagram, (needed - width) / 2)
         width = needed
     if _apply_manual_positions(diagram, style, opts, honor_manual):
+        width, height = _bounds(diagram, style)
+        width += opts.padding
+        needed = reserve["width"] + 2 * opts.padding
+        width = max(width, needed)
+    if _apply_edge_ends(diagram, style, honor_manual):
         width, height = _bounds(diagram, style)
         width += opts.padding
         needed = reserve["width"] + 2 * opts.padding
@@ -1353,9 +1358,10 @@ def _route_self_loops(diagram: Diagram, opts: LayoutOptions,
 
 
 def _place_labels(diagram: Diagram, style: StyleResolver,
-                  opts: LayoutOptions) -> None:
+                  opts: LayoutOptions, honor_manual: bool = True) -> None:
     for edge in diagram.edges:
         if not edge.label or len(edge.points) < 2:
+            edge.label_anchor = None
             edge.label_pos = None
             continue
         mid, direction = point_at(edge.points, 0.5)
@@ -1364,7 +1370,13 @@ def _place_labels(diagram: Diagram, style: StyleResolver,
         offset = (abs(side[0]) * width / 2 + abs(side[1]) * height / 2) + style.px(5)
         if side[0] < 0 or (abs(side[0]) < 1e-6 and side[1] < 0):
             side = (-side[0], -side[1])
-        edge.label_pos = (mid[0] + side[0] * offset, mid[1] + side[1] * offset)
+        anchor = (mid[0] + side[0] * offset, mid[1] + side[1] * offset)
+        edge.label_anchor = anchor
+        if edge.label_off is not None and (honor_manual or edge.locked):
+            edge.label_pos = (anchor[0] + style.px(edge.label_off[0]),
+                              anchor[1] + style.px(edge.label_off[1]))
+        else:
+            edge.label_pos = anchor
 
 
 def _bounds(diagram: Diagram, style: StyleResolver) -> tuple[float, float]:
@@ -1419,6 +1431,8 @@ def _shift_all(diagram: Diagram, dx: float, dy: float = 0.0) -> None:
         edge.points = [(px + dx, py + dy) for px, py in edge.points]
         if edge.label_pos:
             edge.label_pos = (edge.label_pos[0] + dx, edge.label_pos[1] + dy)
+        if edge.label_anchor:
+            edge.label_anchor = (edge.label_anchor[0] + dx, edge.label_anchor[1] + dy)
 
 
 def _fit_outside(diagram: Diagram, min_x: float, min_y: float) -> None:
@@ -1507,7 +1521,7 @@ def _apply_manual_positions(diagram: Diagram, style: StyleResolver,
             _reroute(diagram, edge, opts, style)
 
     attach_shape_ends(diagram, style)
-    _place_labels(diagram, style, opts)
+    _place_labels(diagram, style, opts, honor_manual)
     _shift_negative(diagram)
     return True
 
@@ -1629,6 +1643,35 @@ def _route_waypoints(diagram: Diagram, edge: Edge, style: StyleResolver) -> None
         points[0] = _clip_end(left, points[1], style)
         points[-1] = _clip_end(right, points[-2], style)
     edge.points = points
+
+
+def _apply_edge_ends(diagram: Diagram, style: StyleResolver,
+                     honor_manual: bool) -> bool:
+    """Ставит заданные точки выхода и входа на границу блока."""
+    changed = False
+    for edge in diagram.edges:
+        if len(edge.points) < 2 or not (honor_manual or edge.locked):
+            continue
+        if edge.exit_at is None and edge.entry_at is None:
+            continue
+        left = _endpoint(diagram, edge.a)
+        right = _endpoint(diagram, edge.b)
+        if edge.exit_at is not None and left is not None:
+            edge.points[0] = _anchor(left, edge.exit_at, style)
+            changed = True
+        if edge.entry_at is not None and right is not None:
+            edge.points[-1] = _anchor(right, edge.entry_at, style)
+            changed = True
+    if changed:
+        _place_labels(diagram, style, _options(diagram, style), honor_manual)
+    return changed
+
+
+def _anchor(obj, offset: tuple[float, float], style: StyleResolver
+            ) -> tuple[float, float]:
+    point = (obj.x + style.px(offset[0]), obj.y + style.px(offset[1]))
+    form = "rect" if isinstance(obj, Group) else style.node_style(obj)["form"]
+    return border_point(form, obj.box(), point)
 
 
 def _clip_end(obj, toward: tuple[float, float], style: StyleResolver
