@@ -46,6 +46,8 @@ class Node:
     # Левый верх, если положение задано вручную. None — считает раскладка.
     pin: tuple[float, float] | None = None
     locked: bool = False
+    # Точки на границе блока: смещение от левого верха, без масштаба.
+    ports: list[tuple[float, float]] = field(default_factory=list)
 
     # --- результат раскладки (в пикселях итогового изображения) ---
     x: float = 0.0
@@ -98,9 +100,15 @@ class Edge:
     # Промежуточные узлы линии. Пусто — маршрут строит раскладка.
     waypoints: list[tuple[float, float]] = field(default_factory=list)
     locked: bool = False
+    # Смещение точки выхода и входа от левого верха своего блока.
+    exit_at: tuple[float, float] | None = None
+    entry_at: tuple[float, float] | None = None
+    # Сдвиг подписи от места, которое выбирает раскладка. Без масштаба.
+    label_off: tuple[float, float] | None = None
 
     # --- результат раскладки ---
     points: list[tuple[float, float]] = field(default_factory=list)
+    label_anchor: tuple[float, float] | None = None
     label_pos: tuple[float, float] | None = None
 
 
@@ -116,6 +124,7 @@ class Group:
     src_line: int = 0
     pin: tuple[float, float] | None = None
     locked: bool = False
+    ports: list[tuple[float, float]] = field(default_factory=list)
 
     x: float = 0.0
     y: float = 0.0

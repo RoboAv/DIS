@@ -224,3 +224,194 @@ def normalize(v: Point) -> Point:
 
 def perpendicular(v: Point) -> Point:
     return (-v[1], v[0])
+
+
+def is_orthogonal(points: list[Point], tol: float = 0.75) -> bool:
+    """Каждое звено ломаной горизонтально или вертикально."""
+    for start, end in zip(points, points[1:]):
+        if abs(start[0] - end[0]) > tol and abs(start[1] - end[1]) > tol:
+            return False
+    return True
+
+
+def orthogonalize(points: list[Point], tol: float = 0.75) -> list[Point]:
+    """Возвращает ортогональную ломаную с теми же концами.
+
+    Промежуточные точки сдвигаются как можно меньше. Если прямое звено
+    нельзя выровнять, не двигая концы, в него вставляется один угол.
+    """
+    if len(points) < 2:
+        return [(float(x), float(y)) for x, y in points]
+    current = [(float(x), float(y)) for x, y in points]
+    if is_orthogonal(current, tol):
+        return current
+    for _ in range(len(current) + 4):
+        snapped = _best_snap(current, tol)
+        if snapped is not None:
+            return _simplify_ortho(snapped, tol)
+        current = _split_diagonal(current)
+    return _simplify_ortho(current, tol)
+
+
+def _best_snap(points: list[Point], tol: float) -> list[Point] | None:
+    """Подбирает оси звеньев так, чтобы точки сдвинулись меньше всего."""
+    segments = len(points) - 1
+    if segments > 12:
+        return _snap_orthogonal(points, tol)
+    prefer = [_prefer_axis(points[index], points[index + 1]) for index in range(segments)]
+    best: list[Point] | None = None
+    best_cost: float | None = None
+    for mask in range(1 << segments):
+        orient = ["H" if (mask >> index) & 1 else "V" for index in range(segments)]
+        if _axis_conflict(points, orient, "H", tol) is not None:
+            continue
+        if _axis_conflict(points, orient, "V", tol) is not None:
+            continue
+        snapped = _apply_axes(points, orient)
+        cost = 0.0
+        for index in range(1, len(points) - 1):
+            dx = snapped[index][0] - points[index][0]
+            dy = snapped[index][1] - points[index][1]
+            cost += dx * dx + dy * dy
+        for index, kind in enumerate(orient):
+            if kind != prefer[index]:
+                cost += 0.01
+        if best_cost is None or cost < best_cost:
+            best_cost = cost
+            best = snapped
+    return best
+
+
+def _prefer_axis(start: Point, end: Point) -> str:
+    return "H" if abs(end[1] - start[1]) <= abs(end[0] - start[0]) else "V"
+
+
+def _components(count: int, orient: list[str], axis: str) -> list[list[int]]:
+    parent = list(range(count))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    for index, kind in enumerate(orient):
+        if kind != axis:
+            continue
+        left, right = find(index), find(index + 1)
+        if left != right:
+            parent[right] = left
+    groups: dict[int, list[int]] = {}
+    for index in range(count):
+        groups.setdefault(find(index), []).append(index)
+    return list(groups.values())
+
+
+def _snap_orthogonal(points: list[Point], tol: float) -> list[Point] | None:
+    count = len(points)
+    orient = [_prefer_axis(points[index], points[index + 1]) for index in range(count - 1)]
+    seen: set[tuple[str, ...]] = set()
+    while True:
+        key = tuple(orient)
+        if key in seen:
+            return None
+        seen.add(key)
+        flip = _axis_conflict(points, orient, "H", tol)
+        if flip is None:
+            flip = _axis_conflict(points, orient, "V", tol)
+            if flip is None:
+                return _apply_axes(points, orient)
+            orient[flip] = "H"
+        else:
+            orient[flip] = "V"
+
+
+def _axis_conflict(points: list[Point], orient: list[str], axis: str,
+                   tol: float) -> int | None:
+    count = len(points)
+    coord = 1 if axis == "H" else 0
+    worst: int | None = None
+    worst_cost = -1.0
+    for group in _components(count, orient, axis):
+        fixed: list[float] = []
+        if 0 in group:
+            fixed.append(points[0][coord])
+        if count - 1 in group and count > 1:
+            fixed.append(points[count - 1][coord])
+        if len(fixed) < 2 or abs(fixed[0] - fixed[1]) <= tol:
+            continue
+        root = group[0]
+        members = set(group)
+        for index, kind in enumerate(orient):
+            if kind != axis or index not in members:
+                continue
+            cost = abs(points[index][coord] - points[index + 1][coord])
+            if cost >= worst_cost:
+                worst_cost = cost
+                worst = index
+        del root
+    return worst
+
+
+def _apply_axes(points: list[Point], orient: list[str]) -> list[Point]:
+    count = len(points)
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    for group in _components(count, orient, "H"):
+        shared = _shared_coord(points, group, 1)
+        for index in group:
+            if index not in (0, count - 1):
+                ys[index] = shared
+    for group in _components(count, orient, "V"):
+        shared = _shared_coord(points, group, 0)
+        for index in group:
+            if index not in (0, count - 1):
+                xs[index] = shared
+    return [(points[index][0] if index in (0, count - 1) else xs[index],
+             points[index][1] if index in (0, count - 1) else ys[index])
+            for index in range(count)]
+
+
+def _shared_coord(points: list[Point], group: list[int], coord: int) -> float:
+    count = len(points)
+    if 0 in group:
+        return points[0][coord]
+    if count - 1 in group:
+        return points[count - 1][coord]
+    return sum(points[index][coord] for index in group) / len(group)
+
+
+def _split_diagonal(points: list[Point]) -> list[Point]:
+    best = 0
+    score = -1.0
+    for index in range(len(points) - 1):
+        dx = abs(points[index + 1][0] - points[index][0])
+        dy = abs(points[index + 1][1] - points[index][1])
+        slant = min(dx, dy)
+        if slant > score:
+            score = slant
+            best = index
+    start, end = points[best], points[best + 1]
+    if abs(end[0] - start[0]) >= abs(end[1] - start[1]):
+        corner = (end[0], start[1])
+    else:
+        corner = (start[0], end[1])
+    return [*points[:best + 1], corner, *points[best + 1:]]
+
+
+def _simplify_ortho(points: list[Point], tol: float) -> list[Point]:
+    kept: list[Point] = []
+    for point in points:
+        if kept and abs(point[0] - kept[-1][0]) <= tol and abs(point[1] - kept[-1][1]) <= tol:
+            continue
+        kept.append(point)
+    index = 1
+    while index < len(kept) - 1:
+        before, current, after = kept[index - 1], kept[index], kept[index + 1]
+        same_x = abs(before[0] - current[0]) <= tol and abs(current[0] - after[0]) <= tol
+        same_y = abs(before[1] - current[1]) <= tol and abs(current[1] - after[1]) <= tol
+        if same_x or same_y:
+            del kept[index]
+        else:
+            index += 1
+    return kept

@@ -545,10 +545,10 @@ class CodeEditor(ttk.Frame):
             return
         cursor = self.text.index("insert")
         yview = self.text.yview()[0]
-        self.text.edit_separator()
+        self._begin_edit()
         self.text.delete("1.0", "end")
         self.text.insert("1.0", value)
-        self.text.edit_separator()
+        self._end_edit()
         try:
             self.text.mark_set("insert", cursor)
         except tk.TclError:

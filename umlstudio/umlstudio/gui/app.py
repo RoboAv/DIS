@@ -15,10 +15,15 @@ from tkinter import filedialog, messagebox, ttk
 from .. import __version__, api
 from ..parser import parse
 from ..positions import (
+    clear_edge_end,
     clear_edge_waypoints,
     edge_ordinal,
     schema_text,
+    set_edge_end,
+    set_edge_geometry,
+    set_edge_label_offset,
     set_edge_waypoints,
+    set_node_ports,
     set_node_position,
 )
 from . import native, tooltip
@@ -235,6 +240,11 @@ class App(tk.Tk):
             on_edge_cleared=self._on_edge_cleared,
             on_node_lock=self._on_node_lock,
             on_edge_lock=self._on_edge_lock,
+            on_ports=self._on_ports,
+            on_edge_end=self._on_edge_end,
+            on_label=self._on_label,
+            on_orthogonal=self._on_orthogonal,
+            on_message=self._status,
             on_zoom_change=self._on_zoom,
         )
         self.preview.pack(fill="both", expand=True)
@@ -412,6 +422,24 @@ class App(tk.Tk):
             "при изменении схемы. Разблокировать: раскладка двигает их. "
             "Правый щелчок блокирует один объект",
         )
+        self._button(
+            bar, "Добавить точку", self._add_point,
+            "На выбранный блок — точка на границе, на выбранную связь — узел линии",
+            side="left", padx=(8, 3))
+        self._button(
+            bar, "Удалить точку", self._delete_point,
+            "Удалить выбранную точку входа, выхода, узла или свободную точку блока. "
+            "Если выбрана связь — убирает все её промежуточные узлы",
+            side="left")
+        self._button(
+            bar, "Удалить узлы", self._clear_bends,
+            "Убрать все промежуточные узлы выбранной связи",
+            side="left", padx=(0, 3))
+        self._button(
+            bar, "Ортогонально", self._orthogonalize,
+            "Выровнять изменённую связь по горизонтали и вертикали, "
+            "сдвинув узлы как можно меньше",
+            side="left")
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
 
         self._button(bar, "Свой объект…", self.design_shape,
@@ -506,13 +534,10 @@ class App(tk.Tk):
             return False
         if key in "cvx" and not in_editor:
             return False
-        if key == "z" and not in_editor and not shift:
-            return False
-        if in_editor and key == "z" and shift:
-            self._text_event("<<Redo>>")
-            return True
-        if in_editor and key == "z":
-            self._text_event("<<Undo>>")
+        if key == "z":
+            if not in_editor and event.widget.winfo_class() in ("Text", "Entry", "TEntry"):
+                return False
+            self._text_event("<<Redo>>" if shift else "<<Undo>>")
             return True
         if in_editor and key == "y" and not shift:
             self._text_event("<<Redo>>")
@@ -874,6 +899,67 @@ class App(tk.Tk):
             edge_ordinal(self._diagram.edges, index), points,
             src_line=edge.src_line,
         ))
+
+    def _add_point(self) -> None:
+        if not self.interactive.get():
+            self._status("Точки добавляются в интерактивном режиме")
+            return
+        self.scene.add_point()
+
+    def _delete_point(self) -> None:
+        if not self.interactive.get():
+            self._status("Точки удаляются в интерактивном режиме")
+            return
+        self.scene.delete_point()
+
+    def _clear_bends(self) -> None:
+        if not self.interactive.get():
+            self._status("Узлы убираются в интерактивном режиме")
+            return
+        self.scene.clear_bends()
+
+    def _orthogonalize(self) -> None:
+        if not self.interactive.get():
+            self._status("Выравнивание доступно в интерактивном режиме")
+            return
+        self.scene.orthogonalize()
+
+    def _on_ports(self, name: str, points: list[tuple[float, float]]) -> None:
+        self._write_text(set_node_ports(self.editor.get_text(), name, points))
+
+    def _on_edge_end(self, index: int, kind: str,
+                     point: tuple[float, float] | None) -> None:
+        edge = self._edge(index)
+        if edge is None:
+            return
+        ordinal = edge_ordinal(self._diagram.edges, index)
+        text = self.editor.get_text()
+        if point is None:
+            updated = clear_edge_end(text, kind, edge.a, edge.b, ordinal)
+        else:
+            updated = set_edge_end(text, kind, edge.a, edge.b, ordinal, point)
+        self._write_text(updated)
+
+    def _on_label(self, index: int, offset: tuple[float, float] | None) -> None:
+        edge = self._edge(index)
+        if edge is None:
+            return
+        self._write_text(set_edge_label_offset(
+            self.editor.get_text(), edge.a, edge.b,
+            edge_ordinal(self._diagram.edges, index), offset,
+        ))
+
+    def _on_orthogonal(self, specs) -> None:
+        text = self.editor.get_text()
+        for index, waypoints, exit_at, entry_at in specs:
+            edge = self._edge(index)
+            if edge is None or self._diagram is None:
+                continue
+            text = set_edge_geometry(
+                text, edge.a, edge.b, edge_ordinal(self._diagram.edges, index),
+                waypoints, exit_at, entry_at, src_line=edge.src_line,
+            )
+        self._write_text(text)
 
     def _on_edge_cleared(self, index: int) -> None:
         edge = self._edge(index)

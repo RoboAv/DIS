@@ -108,6 +108,20 @@ VIA_ATTR = re.compile(
     rf"(?:\s*;\s*{_NUMR}(?:\s*,\s*|\s+){_NUMR})*)",
     re.IGNORECASE,
 )
+PORTS_LINE = re.compile(
+    rf"^\s*(?:ports|точки)\s+(?P<name>{IDENT})\s+(?P<pts>.+)\s*$",
+    re.IGNORECASE,
+)
+END_LINE = re.compile(
+    rf"^\s*(?P<kind>exit|entry|выход|вход)\s+(?P<a>{IDENT})\s+(?P<b>{IDENT})"
+    rf"(?:\s+#(?P<n>\d+))?\s+(?P<x>{_NUMR})\s*,\s*(?P<y>{_NUMR})\s*$",
+    re.IGNORECASE,
+)
+LABEL_LINE = re.compile(
+    rf"^\s*(?P<kind>labelat|сдвиг)\s+(?P<a>{IDENT})\s+(?P<b>{IDENT})"
+    rf"(?:\s+#(?P<n>\d+))?\s+(?P<x>{_NUMR})\s*,\s*(?P<y>{_NUMR})\s*$",
+    re.IGNORECASE,
+)
 
 TRUE_WORDS = {"on", "true", "1", "yes", "y", "да", "вкл"}
 FALSE_WORDS = {"off", "false", "0", "no", "n", "нет", "выкл"}
@@ -264,6 +278,9 @@ class Parser:
         self._depth = 0
         self._vias: list[tuple] = []
         self._pending_at: list[tuple] = []
+        self._pending_ports: list[tuple] = []
+        self._ends: list[tuple] = []
+        self._label_offs: list[tuple] = []
 
     # ------------------------------------------------------------ public --
 
@@ -613,6 +630,18 @@ class Parser:
                 continue
             if first in ("via", "через") and VIA_LINE.match(stripped):
                 self._parse_via(no, stripped)
+                i += 1
+                continue
+            if first in ("ports", "точки") and PORTS_LINE.match(stripped):
+                self._parse_ports(no, stripped)
+                i += 1
+                continue
+            if first in ("exit", "entry", "выход", "вход") and END_LINE.match(stripped):
+                self._parse_end(no, stripped)
+                i += 1
+                continue
+            if first in ("labelat", "сдвиг") and LABEL_LINE.match(stripped):
+                self._parse_label_off(no, stripped)
                 i += 1
                 continue
 
@@ -1186,7 +1215,12 @@ class Parser:
         for no, name, x, y, locked in self._pending_at:
             if not self._assign_at(name, x, y, locked):
                 self._warn(no, f"положение: нет объекта {name}")
+        for no, name, points in self._pending_ports:
+            if not self._assign_ports(name, points):
+                self._warn(no, f"точки: нет объекта {name}")
         self._apply_vias()
+        self._apply_ends()
+        self._apply_label_offs()
 
     def _assign_at(self, name: str, x: float, y: float, locked: bool) -> bool:
         target = self.d.nodes.get(name)
@@ -1243,6 +1277,90 @@ class Parser:
             if points:
                 target.waypoints = points
             target.locked = locked
+
+    def _parse_ports(self, no: int, stripped: str) -> None:
+        found = PORTS_LINE.match(stripped)
+        if not found:
+            self._warn(no, "ожидалось: ports Имя x, y; ...", stripped)
+            return
+        points = parse_points(found.group("pts"))
+        if not points:
+            self._warn(no, "у ports нет координат", stripped)
+            return
+        name = _unquote(found.group("name"))
+        if not self._assign_ports(name, points):
+            self._pending_ports.append((no, name, points))
+
+    def _assign_ports(self, name: str, points: list[tuple[float, float]]) -> bool:
+        target = self.d.nodes.get(name)
+        if target is None:
+            target = self.d.groups.get(name)
+        if target is None:
+            return False
+        target.ports = list(points)
+        return True
+
+    def _parse_end(self, no: int, stripped: str) -> None:
+        found = END_LINE.match(stripped)
+        if not found:
+            self._warn(no, "ожидалось: exit A B [#n] x, y", stripped)
+            return
+        index = int(found.group("n")) if found.group("n") else None
+        self._ends.append((
+            no, found.group("kind").lower(),
+            _unquote(found.group("a")), _unquote(found.group("b")),
+            index, (float(found.group("x")), float(found.group("y"))),
+        ))
+
+    def _apply_ends(self) -> None:
+        buckets: dict[tuple[str, str], list[Edge]] = {}
+        for edge in self.d.edges:
+            buckets.setdefault((edge.a, edge.b), []).append(edge)
+        for no, kind, a, b, index, point in self._ends:
+            edges = buckets.get((a, b), [])
+            if not edges:
+                self._warn(no, f"{kind}: нет связи {a} -> {b}")
+                continue
+            if index is None:
+                target = edges[0]
+            elif index < 1 or index > len(edges):
+                self._warn(no, f"{kind}: у {a} -> {b} нет связи #{index}")
+                continue
+            else:
+                target = edges[index - 1]
+            if kind in ("exit", "выход"):
+                target.exit_at = point
+            else:
+                target.entry_at = point
+
+    def _parse_label_off(self, no: int, stripped: str) -> None:
+        found = LABEL_LINE.match(stripped)
+        if not found:
+            self._warn(no, "ожидалось: labelat A B [#n] dx, dy", stripped)
+            return
+        index = int(found.group("n")) if found.group("n") else None
+        self._label_offs.append((
+            no, _unquote(found.group("a")), _unquote(found.group("b")),
+            index, (float(found.group("x")), float(found.group("y"))),
+        ))
+
+    def _apply_label_offs(self) -> None:
+        buckets: dict[tuple[str, str], list[Edge]] = {}
+        for edge in self.d.edges:
+            buckets.setdefault((edge.a, edge.b), []).append(edge)
+        for no, a, b, index, point in self._label_offs:
+            edges = buckets.get((a, b), [])
+            if not edges:
+                self._warn(no, f"сдвиг: нет связи {a} -> {b}")
+                continue
+            if index is None:
+                target = edges[0]
+            elif index < 1 or index > len(edges):
+                self._warn(no, f"сдвиг: у {a} -> {b} нет связи #{index}")
+                continue
+            else:
+                target = edges[index - 1]
+            target.label_off = point
 
 
 def _substitute(line: str, mapping: dict[str, str]) -> str:
