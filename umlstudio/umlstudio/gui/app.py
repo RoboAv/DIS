@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import sys
 import threading
 import tkinter as tk
 import traceback
@@ -150,7 +151,9 @@ class App(tk.Tk):
     """Редактор текста диаграммы с постоянным предпросмотром PNG."""
 
     def __init__(self, path: str | None = None) -> None:
+        _windows_app_id()
         super().__init__()
+        self._icon_images = _apply_icon(self)
         self.title("UML Studio")
         self.geometry("1360x860")
         self.minsize(900, 600)
@@ -1284,6 +1287,54 @@ def _save_settings(data: dict) -> None:
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:
         pass
+
+
+def _windows_app_id() -> None:
+    """Отделяет значок окна от значка python.exe на панели задач."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "UmlStudio.UMLStudio")
+    except (AttributeError, OSError):
+        pass
+
+
+def _icon_path() -> Path:
+    """logo.ico рядом с исходниками или внутри собранной программы."""
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS"))
+    else:
+        base = Path(__file__).resolve().parents[2]
+    return base / "assets" / "logo.ico"
+
+
+def _apply_icon(window: tk.Tk) -> list[tk.PhotoImage]:
+    """Ставит значок в заголовок, на панель задач и на дочерние окна."""
+    path = _icon_path()
+    if not path.is_file():
+        return []
+    if sys.platform == "win32":
+        try:
+            window.iconbitmap(default=str(path))
+        except tk.TclError:
+            pass
+    photos: list[tk.PhotoImage] = []
+    try:
+        from PIL import Image, ImageTk
+        with Image.open(path) as icon:
+            frames = (sorted(icon.ico.sizes())
+                      if getattr(icon, "ico", None) else [icon.size])
+            for size in frames:
+                if getattr(icon, "ico", None):
+                    icon.size = size
+                photos.append(ImageTk.PhotoImage(icon.convert("RGBA")))
+    except (OSError, tk.TclError, AttributeError, ValueError):
+        return photos
+    if photos:
+        window.iconphoto(True, *photos)
+    return photos
 
 
 def run(path: str | None = None) -> None:
