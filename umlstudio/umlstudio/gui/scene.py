@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import tkinter as tk
 from tkinter import ttk
 
@@ -11,6 +12,16 @@ from ..positions import edge_ordinal
 from ..style import StyleResolver
 from ..theme import get_theme, to_hex
 from .preview import BACKDROPS, ZOOM_STEPS
+
+# Доля большей стороны объекта. Безразмерная — без порога, к ближайшему.
+SNAP_FACTORS = {
+    "выкл": 0.0,
+    "близко": 0.08,
+    "обычно": 0.2,
+    "далеко": 0.5,
+    "безразмерная": math.inf,
+}
+
 
 def _same_path(left: list[tuple[float, float]], right: list[tuple[float, float]],
                tol: float = 0.6) -> bool:
@@ -36,6 +47,174 @@ def _longest_midpoint(points: list[tuple[float, float]]
     return mid, at
 
 
+def _ranges_overlap(a0: float, a1: float, b0: float, b1: float, pad: float) -> bool:
+    return a0 <= b1 + pad and b0 <= a1 + pad
+
+
+def _span_features(box: tuple[float, float, float, float], edges: bool,
+                   centers: bool, nodes: bool) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Какие линии движимого объекта могут встать на чужую."""
+    x0, y0, x1, y1 = box
+    if abs(x1 - x0) < 0.5 and abs(y1 - y0) < 0.5:
+        return (x0,), (y0,)
+    xs: list[float] = []
+    ys: list[float] = []
+    if edges or nodes:
+        xs.extend((x0, x1))
+        ys.extend((y0, y1))
+    if centers:
+        xs.append((x0 + x1) / 2)
+        ys.append((y0 + y1) / 2)
+    return tuple(xs), tuple(ys)
+
+
+def snap_limit(mode: str, size: float) -> float:
+    """Порог в тех же единицах, что и фигура: доля её размера, не пиксели экрана."""
+    factor = SNAP_FACTORS.get(mode, SNAP_FACTORS["обычно"])
+    if factor == 0:
+        return 0.0
+    if math.isinf(factor):
+        return math.inf
+    return factor * max(size, 1.0)
+
+
+def smart_align(
+    movers: list[tuple[float, float, float, float]],
+    boxes: list[tuple[float, float, float, float]],
+    magnets: list[tuple[float, float]],
+    axis_points: list[tuple[float, float]],
+    limit: float,
+    edges: bool,
+    centers: bool,
+    nodes: bool,
+    point_snap: bool,
+    anchors: list[tuple[float, float]] | None = None,
+    object_move: bool = False,
+) -> tuple[float, float, list[tuple[float, float, float, float]]]:
+    """Сдвиг к ближайшему соседу.
+
+    Порог — доля размера фигуры. Безразмерный режим берёт ближайшее
+    совпадение на любом расстоянии. Узлы всех связей, не только своей.
+    """
+    anchors = anchors or []
+    if limit <= 0 or not movers or not (edges or centers or nodes):
+        return 0.0, 0.0, []
+
+    def nearest(horizontal: bool):
+        best = 0.0
+        best_abs = math.inf if math.isinf(limit) else limit + 1.0
+        found = None
+        for mover in movers:
+            if object_move and abs(mover[2] - mover[0]) >= 0.5:
+                if horizontal:
+                    sources = [mover[1], mover[3], (mover[1] + mover[3]) / 2]
+                    sources.extend(point[1] for point in anchors)
+                else:
+                    sources = [mover[0], mover[2], (mover[0] + mover[2]) / 2]
+                    sources.extend(point[0] for point in anchors)
+                sources = tuple(sources)
+            else:
+                xs, ys = _span_features(mover, edges, centers, nodes)
+                sources = ys if horizontal else xs
+            if not sources:
+                continue
+            if edges or centers:
+                for box in boxes:
+                    if horizontal:
+                        if not _ranges_overlap(mover[0], mover[2], box[0], box[2], limit):
+                            continue
+                        targets = _span_features(box, edges, centers, False)[1]
+                        span = (box[0], box[2])
+                    else:
+                        if not _ranges_overlap(mover[1], mover[3], box[1], box[3], limit):
+                            continue
+                        targets = _span_features(box, edges, centers, False)[0]
+                        span = (box[1], box[3])
+                    for src in sources:
+                        for dst in targets:
+                            delta = dst - src
+                            mag = abs(delta)
+                            if mag <= limit and mag < best_abs:
+                                best_abs = mag
+                                best = delta
+                                found = (mover, dst, span)
+            if not nodes:
+                continue
+            cloud = [(px, py, False) for px, py in magnets]
+            cloud += [(px, py, True) for px, py in axis_points]
+            for px, py, sibling in cloud:
+                if horizontal:
+                    if not sibling and not _ranges_overlap(mover[0], mover[2], px, px, limit):
+                        continue
+                    dst = py
+                    other = px
+                    mover_other = (mover[0] + mover[2]) / 2
+                else:
+                    if not sibling and not _ranges_overlap(mover[1], mover[3], py, py, limit):
+                        continue
+                    dst = px
+                    other = py
+                    mover_other = (mover[1] + mover[3]) / 2
+                for src in sources:
+                    delta = dst - src
+                    mag = abs(delta)
+                    if sibling and (mag < 0.5 or mag >= abs(other - mover_other)):
+                        continue
+                    if mag <= limit and mag < best_abs:
+                        best_abs = mag
+                        best = delta
+                        found = (mover, dst, (other, other))
+        return best, found
+
+    shift_x, found_x = nearest(False)
+    shift_y, found_y = nearest(True)
+    guides: list[tuple[float, float, float, float]] = []
+
+    def segment(found, shift_other: float, vertical: bool) -> None:
+        if found is None:
+            return
+        mover, value, span = found
+        if vertical:
+            y0 = min(mover[1] + shift_y, span[0])
+            y1 = max(mover[3] + shift_y, span[1])
+            if y1 - y0 < 8:
+                mid = (y0 + y1) / 2
+                y0, y1 = mid - 8, mid + 8
+            guides.append((value, y0, value, y1))
+        else:
+            x0 = min(mover[0] + shift_x, span[0])
+            x1 = max(mover[2] + shift_x, span[1])
+            if x1 - x0 < 8:
+                mid = (x0 + x1) / 2
+                x0, x1 = mid - 8, mid + 8
+            guides.append((x0, value, x1, value))
+
+    segment(found_x, shift_y, True)
+    segment(found_y, shift_x, False)
+    if nodes and magnets and (point_snap or anchors):
+        best_d = limit
+        hit = None
+        probes: list[tuple[float, float]] = []
+        if point_snap:
+            probes.extend(((box[0] + box[2]) / 2, (box[1] + box[3]) / 2) for box in movers)
+        probes.extend(anchors)
+        for cx, cy in probes:
+            for px, py in magnets:
+                dist = ((px - cx) ** 2 + (py - cy) ** 2) ** 0.5
+                if dist <= best_d:
+                    best_d = dist
+                    hit = (px - cx, py - cy, px, py)
+        axis_mag = (shift_x ** 2 + shift_y ** 2) ** 0.5 if guides else limit + 1
+        if hit is not None and best_d < axis_mag:
+            dx, dy, px, py = hit
+            arm = 9.0
+            return dx, dy, [
+                (px - arm, py, px + arm, py),
+                (px, py - arm, px, py + arm),
+            ]
+    return shift_x, shift_y, guides
+
+
 def _segment_distance(start: tuple[float, float], end: tuple[float, float],
                       point: tuple[float, float]) -> float:
     ax, ay = start
@@ -53,9 +232,9 @@ def _segment_distance(start: tuple[float, float], end: tuple[float, float],
 HINT = (
     "Интерактивная область\n"
     "Щелчок выбирает блок, связь или точку\n"
-    "На границе блока — точки входа и выхода\n"
-    "Кнопки «Добавить точку» и «Удалить точку»\n"
-    "Подпись связи можно перетащить\n"
+    "Отрезок связи двигает обе его точки одинаково\n"
+    "Рядом с блоком или узлом связи сдвиг к ним прилипает\n"
+    "Delete удаляет выбранный блок, пакет или связь\n"
     "Правый щелчок блокирует объект"
 )
 
@@ -66,8 +245,9 @@ class InteractiveCanvas(ttk.Frame):
     def __init__(self, master, on_node_moved=None, on_edge_moved=None,
                  on_edge_cleared=None, on_node_lock=None, on_edge_lock=None,
                  on_ports=None, on_edge_end=None, on_label=None,
-                 on_orthogonal=None, on_message=None,
-                 on_zoom_change=None) -> None:
+                 on_orthogonal=None, on_straight=None, on_segment=None,
+                 on_delete_object=None, on_delete_edge=None,
+                 on_message=None, on_zoom_change=None) -> None:
         super().__init__(master)
         self._on_node_moved = on_node_moved
         self._on_edge_moved = on_edge_moved
@@ -78,8 +258,17 @@ class InteractiveCanvas(ttk.Frame):
         self._on_edge_end = on_edge_end
         self._on_label = on_label
         self._on_orthogonal = on_orthogonal
+        self._on_straight = on_straight
+        self._on_segment = on_segment
+        self._on_delete_object = on_delete_object
+        self._on_delete_edge = on_delete_edge
         self._on_message = on_message
         self._on_zoom_change = on_zoom_change
+        self._show_hidden = False
+        self._snap_mode = "обычно"
+        self._snap_edges = True
+        self._snap_centers = True
+        self._snap_nodes = True
         self._selection: tuple | None = None
 
         self.zoom = 1.0
@@ -147,6 +336,17 @@ class InteractiveCanvas(ttk.Frame):
         self._paint(self._diagram, "")
         self._notify()
 
+    def set_show_hidden(self, value: bool) -> None:
+        self._show_hidden = bool(value)
+        if self._diagram is not None:
+            self._paint(self._diagram, "")
+
+    def set_snap(self, mode: str, edges: bool, centers: bool, nodes: bool) -> None:
+        self._snap_mode = mode if mode in SNAP_FACTORS else "обычно"
+        self._snap_edges = bool(edges)
+        self._snap_centers = bool(centers)
+        self._snap_nodes = bool(nodes)
+
     def zoom_in(self) -> None:
         self.set_zoom(self._step(1))
 
@@ -164,6 +364,7 @@ class InteractiveCanvas(ttk.Frame):
         self._edge_line.clear()
         self._group_names = []
         self.canvas.delete("item")
+        self.canvas.delete("guide")
         empty = diagram is None or not (diagram.nodes or diagram.groups)
         if error or empty:
             self.canvas.itemconfigure(self._hint, state="normal",
@@ -173,7 +374,8 @@ class InteractiveCanvas(ttk.Frame):
         self.canvas.itemconfigure(self._hint, state="hidden")
         theme_name = str(diagram.opt("theme", "light"))
         palette = get_theme(theme_name)
-        self._style = StyleResolver(diagram, palette, 1.0)
+        layout_scale = float(diagram.metrics.get("scale", 1) or 1)
+        self._style = StyleResolver(diagram, palette, layout_scale)
         if self._fit_mode:
             self._compute_fit()
         self._draw(diagram, palette)
@@ -214,6 +416,10 @@ class InteractiveCanvas(ttk.Frame):
             self._draw_ports(node, index, group=False)
         for index, group in enumerate(self._groups_back_to_front(diagram)):
             self._draw_ports(group, index, group=True)
+        for index, node in enumerate(diagram.nodes.values()):
+            self._draw_side_centers(node, index, group=False)
+        for index, group in enumerate(self._groups_back_to_front(diagram)):
+            self._draw_side_centers(group, index, group=True)
         self._draw_chrome()
         self.canvas.tag_raise("point")
         self.canvas.configure(scrollregion=(0, 0, view_w, view_h))
@@ -332,8 +538,40 @@ class InteractiveCanvas(ttk.Frame):
     def _point_selected(self, logical: tuple) -> bool:
         return self._selection == logical
 
+    def _edge_hidden(self, edge: Edge) -> bool:
+        if self._style is None:
+            return False
+        return bool(self._style.edge_style(edge)["hidden"])
+
+    def _face_centers(self, obj, form: str) -> list[tuple[float, float]]:
+        box = obj.box()
+        cx = obj.x + obj.w / 2
+        cy = obj.y + obj.h / 2
+        probes = (
+            (cx, obj.y - 40),
+            (cx, obj.y + obj.h + 40),
+            (obj.x - 40, cy),
+            (obj.x + obj.w + 40, cy),
+        )
+        return [border_point(form, box, probe) for probe in probes]
+
+    def _draw_side_centers(self, obj, index: int, group: bool) -> None:
+        assert self._style is not None
+        form = "rect" if group else self._style.node_style(obj)["form"]
+        host = "g" if group else "n"
+        radius = max(2.5, 3.2 * self.zoom)
+        for point in self._face_centers(obj, form):
+            cx, cy = self._to_canvas(*point)
+            self.canvas.create_oval(
+                cx - radius, cy - radius, cx + radius, cy + radius,
+                fill="#90a4ae", outline="",
+                tags=("item", f"{host}:{index}", "side"),
+            )
+
     def _draw_ends(self, index: int, edge: Edge) -> None:
         if len(edge.points) < 2 or self._diagram is None:
+            return
+        if self._edge_hidden(edge) and not self._show_hidden:
             return
         key = (edge.a, edge.b, edge_ordinal(self._diagram.edges, index))
         self._mark_point(index, 0, edge.points[0], "exit", key, "#2e7d32")
@@ -400,21 +638,22 @@ class InteractiveCanvas(ttk.Frame):
     def _draw_edge(self, index: int, edge: Edge) -> None:
         assert self._style is not None and self._diagram is not None
         st = self._style.edge_style(edge)
-        if st["hidden"] or len(edge.points) < 2:
+        hidden = bool(st["hidden"])
+        if (hidden and not self._show_hidden) or len(edge.points) < 2:
             return
         flat: list[float] = []
         for px, py in edge.points:
             cx, cy = self._to_canvas(px, py)
             flat.extend((cx, cy))
-        color = to_hex(st["color"])
+        color = "#90a4ae" if hidden else to_hex(st["color"])
         width = max(1.4, float(st["width"])) * max(0.8, self.zoom)
         if self._edge_selected(index):
             color = "#1565c0"
             width += 1.6 * self.zoom
-        dash = None
-        if st["line"] == "dashed":
+        dash = (6, 4) if hidden else None
+        if not hidden and st["line"] == "dashed":
             dash = (8, 5)
-        elif st["line"] == "dotted":
+        elif not hidden and st["line"] == "dotted":
             dash = (2, 3)
         arrow = "last" if any(word in st["head"] for word in ("arrow", "triangle")) else "none"
         tags = ("item", f"e:{index}", "edge")
@@ -465,6 +704,8 @@ class InteractiveCanvas(ttk.Frame):
 
     def _draw_handles(self, index: int, edge: Edge) -> None:
         if len(edge.points) < 3:
+            return
+        if self._edge_hidden(edge) and not self._show_hidden:
             return
         color = "#c62828" if edge.locked else "#1565c0"
         key = (edge.a, edge.b, edge_ordinal(self._diagram.edges, index)) if self._diagram else None
@@ -595,15 +836,47 @@ class InteractiveCanvas(ttk.Frame):
             self.canvas.configure(cursor="hand2")
             return
         mode, data = kind
-        if mode == "edge":
-            return
         self._dragging = True
         self._fit_mode = False
-        self._drag = {"mode": mode, "x": cx, "y": cy, "data": data, "dx": 0.0, "dy": 0.0}
-        if mode in ("node", "label"):
+        drag = {
+            "mode": mode, "x": cx, "y": cy, "data": data,
+            "dx": 0.0, "dy": 0.0, "applied": (0.0, 0.0),
+        }
+        if mode == "node":
+            node = list(self._diagram.nodes.values())[data[0]]
+            drag["box"] = self._box(node.x, node.y, node.w, node.h)
+            self._arm_snap(
+                drag, skip_name=node.name, anchors=self._object_anchors(node),
+                object_move=True,
+            )
+            self.canvas.configure(cursor="fleur")
+        elif mode == "edge":
+            segment = self._nearest_segment(data[0], cx, cy)
+            line = self._edge_line.get(data[0])
+            drag["mode"] = "segment"
+            drag["data"] = (data[0], segment)
+            drag["origin"] = list(self.canvas.coords(line)) if line else []
+            self._arm_snap(drag, edge_index=data[0], held=(segment, segment + 1))
+            self.canvas.configure(cursor="fleur")
+        elif mode == "label":
             self.canvas.configure(cursor="fleur")
         elif mode in ("handle", "exit", "entry", "port"):
+            drag["origin_pt"] = self._grab_point(mode, data)
+            held = ()
+            edge_index = None
+            if mode != "port":
+                edge_index = data[0]
+                if mode == "exit":
+                    held = (0,)
+                elif mode == "entry":
+                    line = self._edge_line.get(edge_index)
+                    count = len(self.canvas.coords(line)) // 2 if line else 0
+                    held = (max(0, count - 1),)
+                else:
+                    held = (data[1],)
+            self._arm_snap(drag, edge_index=edge_index, held=held)
             self.canvas.configure(cursor="crosshair")
+        self._drag = drag
 
     def _press_pan(self, event) -> None:
         self._drag = {"mode": "pan", "x": event.x, "y": event.y}
@@ -624,21 +897,293 @@ class InteractiveCanvas(ttk.Frame):
         self._drag["x"], self._drag["y"] = cx, cy
         self._drag["dx"] += dx
         self._drag["dy"] += dy
-        if self._drag["mode"] == "node":
-            index = self._drag["data"][0]
-            self.canvas.move(f"n:{index}", dx, dy)
-            self._shift_edges(index, dx, dy)
-        elif self._drag["mode"] == "handle":
-            edge_index, point_index = self._drag["data"]
-            self._move_handle(edge_index, point_index, dx, dy)
-        elif self._drag["mode"] in ("exit", "entry"):
-            edge_index = self._drag["data"][0]
-            which = 0 if self._drag["mode"] == "exit" else 1
-            self._move_end(edge_index, which, dx, dy)
-        elif self._drag["mode"] == "port":
-            self._move_tagged(f"p:{self._drag['data'][0]}:{self._drag['data'][1]}:{self._drag['data'][2]}", dx, dy)
-        elif self._drag["mode"] == "label":
+        mode = self._drag["mode"]
+        if mode == "node":
+            self._drag_node()
+        elif mode == "segment":
+            self._drag_segment()
+        elif mode in ("handle", "exit", "entry", "port"):
+            self._drag_point()
+        elif mode == "label":
+            self._drag["applied"] = (self._drag["dx"], self._drag["dy"])
             self._move_tagged(f"l:{self._drag['data'][0]}", dx, dy)
+
+    def _arm_snap(self, drag: dict, skip_name: str | None = None,
+                  edge_index: int | None = None, held: tuple[int, ...] = (),
+                  anchors: list[tuple[float, float]] | None = None,
+                  object_move: bool = False) -> None:
+        boxes, magnets, axis_points = self._collect_snap(skip_name, edge_index, set(held))
+        drag["boxes"] = boxes
+        drag["magnets"] = magnets
+        drag["axis_points"] = axis_points
+        drag["anchors"] = list(anchors or [])
+        drag["object_move"] = object_move
+        drag["ref"] = self._reference_size()
+
+    def _reference_size(self) -> float:
+        """Типичный размер блока на холсте. От него считается доля привязки."""
+        if self._diagram is None or not self._diagram.nodes:
+            return 80.0 * self.zoom
+        sides = sorted(
+            max(node.w, node.h) * self.zoom for node in self._diagram.nodes.values()
+        )
+        return max(1.0, sides[len(sides) // 2])
+
+    def _object_anchors(self, node) -> list[tuple[float, float]]:
+        """Середины граней, центр, точки блока и концы связей на нём."""
+        form = "rect"
+        if self._style is not None:
+            form = self._style.node_style(node)["form"]
+        points = [self._to_canvas(*point) for point in self._face_centers(node, form)]
+        points.append(self._to_canvas(node.x + node.w / 2, node.y + node.h / 2))
+        scale = self._layout_scale()
+        for dx, dy in getattr(node, "ports", ()) or ():
+            border = border_point(
+                form, node.box(), (node.x + dx * scale, node.y + dy * scale),
+            )
+            points.append(self._to_canvas(*border))
+        if self._diagram is not None:
+            for edge in self._diagram.edges:
+                if not edge.points:
+                    continue
+                if edge.a == node.name:
+                    points.append(self._to_canvas(*edge.points[0]))
+                if edge.b == node.name:
+                    points.append(self._to_canvas(*edge.points[-1]))
+        return points
+
+    def _collect_snap(self, skip_name: str | None, edge_index: int | None,
+                      held: set[int]) -> tuple[list, list, list]:
+        boxes: list[tuple[float, float, float, float]] = []
+        magnets: list[tuple[float, float]] = []
+        axis_points: list[tuple[float, float]] = []
+        if self._diagram is None:
+            return boxes, magnets, axis_points
+        for node in self._diagram.nodes.values():
+            if node.name != skip_name:
+                boxes.append(self._box(node.x, node.y, node.w, node.h))
+        for group in self._diagram.groups.values():
+            if group.name != skip_name:
+                boxes.append(self._box(group.x, group.y, group.w, group.h))
+        for index, edge in enumerate(self._diagram.edges):
+            if self._edge_hidden(edge) and not self._show_hidden:
+                continue
+            points = edge.points
+            last = len(points) - 1
+            for vertex, point in enumerate(points):
+                if skip_name and (
+                        (vertex == 0 and edge.a == skip_name)
+                        or (vertex == last and edge.b == skip_name)):
+                    continue
+                if index == edge_index and vertex in held:
+                    continue
+                canvas_point = self._to_canvas(*point)
+                if index == edge_index:
+                    axis_points.append(canvas_point)
+                else:
+                    magnets.append(canvas_point)
+        return boxes, magnets, axis_points
+
+    def _snap_of(self, drag: dict, movers: list[tuple[float, float, float, float]],
+                 point_snap: bool) -> tuple[float, float, list]:
+        dx, dy = drag["dx"], drag["dy"]
+        anchors = [(x + dx, y + dy) for x, y in drag.get("anchors", [])]
+        size = drag.get("ref", 80.0)
+        for box in movers:
+            size = max(size, abs(box[2] - box[0]), abs(box[3] - box[1]))
+        return smart_align(
+            movers, drag.get("boxes", []), drag.get("magnets", []),
+            drag.get("axis_points", []), snap_limit(self._snap_mode, size),
+            self._snap_edges, self._snap_centers, self._snap_nodes, point_snap,
+            anchors, drag.get("object_move", False),
+        )
+
+    def _show_guides(self, guides: list[tuple[float, float, float, float]]) -> None:
+        self.canvas.delete("guide")
+        for x0, y0, x1, y1 in guides:
+            self.canvas.create_line(
+                x0, y0, x1, y1, fill="#42a5f5", dash=(4, 3), tags="guide",
+            )
+        self.canvas.tag_raise("guide")
+
+    def _drag_node(self) -> None:
+        drag = self._drag
+        assert drag is not None
+        box = drag["box"]
+        dx, dy = drag["dx"], drag["dy"]
+        moving = (box[0] + dx, box[1] + dy, box[2] + dx, box[3] + dy)
+        shift_x, shift_y, guides = self._snap_of(drag, [moving], False)
+        sx, sy = dx + shift_x, dy + shift_y
+        prev = drag["applied"]
+        move_x, move_y = sx - prev[0], sy - prev[1]
+        drag["applied"] = (sx, sy)
+        if move_x or move_y:
+            index = drag["data"][0]
+            self.canvas.move(f"n:{index}", move_x, move_y)
+            self._shift_edges(index, move_x, move_y)
+        self._show_guides(guides)
+
+    def _drag_segment(self) -> None:
+        drag = self._drag
+        assert drag is not None
+        origin = drag["origin"]
+        segment = drag["data"][1]
+        slot = segment * 2
+        if slot + 3 >= len(origin):
+            return
+        dx, dy = drag["dx"], drag["dy"]
+        first = (origin[slot] + dx, origin[slot + 1] + dy)
+        second = (origin[slot + 2] + dx, origin[slot + 3] + dy)
+        movers = [
+            (first[0], first[1], first[0], first[1]),
+            (second[0], second[1], second[0], second[1]),
+        ]
+        shift_x, shift_y, guides = self._snap_of(drag, movers, True)
+        self._place_segment(drag["data"][0], segment, origin, dx + shift_x, dy + shift_y)
+        drag["applied"] = (dx + shift_x, dy + shift_y)
+        self._show_guides(guides)
+
+    def _drag_point(self) -> None:
+        drag = self._drag
+        assert drag is not None
+        origin = drag.get("origin_pt")
+        if origin is None:
+            return
+        dx, dy = drag["dx"], drag["dy"]
+        x, y = origin[0] + dx, origin[1] + dy
+        shift_x, shift_y, guides = self._snap_of(drag, [(x, y, x, y)], True)
+        sx, sy = dx + shift_x, dy + shift_y
+        drag["applied"] = (sx, sy)
+        x, y = origin[0] + sx, origin[1] + sy
+        mode = drag["mode"]
+        if mode == "port":
+            host, index, port = drag["data"]
+            self._place_dot(f"p:{host}:{index}:{port}", x, y)
+        else:
+            edge_index = drag["data"][0]
+            if mode == "exit":
+                vertex = 0
+            elif mode == "entry":
+                line = self._edge_line.get(edge_index)
+                coords = self.canvas.coords(line) if line is not None else ()
+                vertex = max(0, len(coords) // 2 - 1)
+            else:
+                vertex = drag["data"][1]
+            self._place_vertex(edge_index, vertex, x, y)
+        self._show_guides(guides)
+
+    def _grab_point(self, mode: str, data) -> tuple[float, float] | None:
+        if mode == "port":
+            return self._dot_center(f"p:{data[0]}:{data[1]}:{data[2]}")
+        edge_index = data[0]
+        line = self._edge_line.get(edge_index)
+        if line is None:
+            return None
+        coords = self.canvas.coords(line)
+        if mode == "exit":
+            return coords[0], coords[1]
+        if mode == "entry":
+            return coords[-2], coords[-1]
+        slot = data[1] * 2
+        if slot + 1 >= len(coords):
+            return None
+        return coords[slot], coords[slot + 1]
+
+    def _dot_center(self, tag: str) -> tuple[float, float] | None:
+        items = self.canvas.find_withtag(tag)
+        if not items:
+            return None
+        box = self.canvas.coords(items[0])
+        if len(box) < 4:
+            return None
+        return (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+
+    def _place_dot(self, tag: str, x: float, y: float) -> None:
+        center = self._dot_center(tag)
+        if center is None:
+            return
+        self.canvas.move(tag, x - center[0], y - center[1])
+
+    def _place_vertex(self, edge_index: int, vertex: int, x: float, y: float) -> None:
+        line = self._edge_line.get(edge_index)
+        if line is None:
+            return
+        coords = list(self.canvas.coords(line))
+        slot = vertex * 2
+        if slot + 1 >= len(coords):
+            return
+        dx, dy = x - coords[slot], y - coords[slot + 1]
+        count = len(coords) // 2
+        if vertex == 0 or vertex == count - 1:
+            self._move_end(edge_index, 0 if vertex == 0 else 1, dx, dy)
+        else:
+            self._move_handle(edge_index, vertex, dx, dy)
+
+    def _nearest_segment(self, edge_index: int, x: float, y: float) -> int:
+        line = self._edge_line.get(edge_index)
+        if line is None:
+            return 0
+        coords = self.canvas.coords(line)
+        best, best_d = 0, 1e18
+        for index in range(0, len(coords) - 2, 2):
+            distance = _segment_distance(
+                (coords[index], coords[index + 1]),
+                (coords[index + 2], coords[index + 3]),
+                (x, y),
+            )
+            if distance < best_d:
+                best_d = distance
+                best = index // 2
+        return best
+
+    def _place_segment(self, edge_index: int, segment: int,
+                       origin: list[float], dx: float, dy: float) -> None:
+        line = self._edge_line.get(edge_index)
+        slot = segment * 2
+        if line is None or slot + 3 >= len(origin):
+            return
+        coords = list(origin)
+        coords[slot] += dx
+        coords[slot + 1] += dy
+        coords[slot + 2] += dx
+        coords[slot + 3] += dy
+        self.canvas.coords(line, *coords)
+        for other in self.canvas.find_withtag(f"e:{edge_index}"):
+            if other != line and self.canvas.type(other) == "line":
+                self.canvas.coords(other, *coords)
+        count = len(coords) // 2
+        for vertex in (segment, segment + 1):
+            x, y = coords[vertex * 2], coords[vertex * 2 + 1]
+            if vertex == 0:
+                self._place_dot(f"x:{edge_index}:0", x, y)
+            elif vertex == count - 1:
+                self._place_dot(f"x:{edge_index}:1", x, y)
+            else:
+                self._place_dot(f"h:{edge_index}:{vertex}", x, y)
+
+    def _commit_segment(self, edge_index: int, segment: int) -> None:
+        line = self._edge_line.get(edge_index)
+        if line is None or self._diagram is None or not self._on_segment:
+            return
+        coords = self.canvas.coords(line)
+        points = [
+            ((x - self._ox) / self.zoom, (y - self._oy) / self.zoom)
+            for x, y in zip(coords[0::2], coords[1::2])
+        ]
+        if len(points) < 2:
+            return
+        edge = self._diagram.edges[edge_index]
+        interior = [self._unscaled(x, y) for x, y in points[1:-1]]
+        exit_at = entry_at = None
+        if segment == 0:
+            host = self._host_obj(edge.a)
+            if host is not None:
+                exit_at = self._snap_offset(host, *points[0])
+        if segment == len(points) - 2:
+            host = self._host_obj(edge.b)
+            if host is not None:
+                entry_at = self._snap_offset(host, *points[-1])
+        self._on_segment(edge_index, interior, exit_at, entry_at)
 
     def _shift_edges(self, node_index: int, dx: float, dy: float) -> None:
         if self._diagram is None:
@@ -656,9 +1201,14 @@ class InteractiveCanvas(ttk.Frame):
                 if edge.a == name and len(coords) >= 2:
                     coords[0] += dx
                     coords[1] += dy
+                    self._move_tagged(f"x:{index}:0", dx, dy)
                 if edge.b == name and len(coords) >= 2:
                     coords[-2] += dx
                     coords[-1] += dy
+                    self._move_tagged(f"x:{index}:1", dx, dy)
+            if edge.a == name and edge.b == name:
+                self._move_tagged(f"x:{index}:0", dx, dy)
+                self._move_tagged(f"x:{index}:1", dx, dy)
             self.canvas.coords(line, *coords)
             for other in self.canvas.find_withtag(f"e:{index}"):
                 if other != line and self.canvas.type(other) == "line":
@@ -692,6 +1242,7 @@ class InteractiveCanvas(ttk.Frame):
         drag = self._drag
         self._drag = None
         self._dragging = False
+        self.canvas.delete("guide")
         self.canvas.configure(cursor="")
         if not drag or self._diagram is None:
             self._flush_pending()
@@ -700,14 +1251,17 @@ class InteractiveCanvas(ttk.Frame):
             self._paint(self._diagram, "")
             self._flush_pending()
             return
-        moved = abs(drag["dx"]) > 1 or abs(drag["dy"]) > 1
+        applied = drag.get("applied", (drag["dx"], drag["dy"]))
+        moved = abs(applied[0]) > 1 or abs(applied[1]) > 1
         if drag["mode"] == "node" and moved:
             index = drag["data"][0]
             node = list(self._diagram.nodes.values())[index]
-            x, y = self._unscaled(node.x + drag["dx"] / self.zoom,
-                                  node.y + drag["dy"] / self.zoom)
+            x, y = self._unscaled(node.x + applied[0] / self.zoom,
+                                  node.y + applied[1] / self.zoom)
             if self._on_node_moved:
                 self._on_node_moved(node.name, x, y)
+        elif drag["mode"] == "segment" and moved:
+            self._commit_segment(drag["data"][0], drag["data"][1])
         elif drag["mode"] == "handle" and moved:
             edge_index = drag["data"][0]
             points = self._interior(edge_index)
@@ -784,6 +1338,11 @@ class InteractiveCanvas(ttk.Frame):
         self._menu.delete(0, "end")
         self._menu.add_command(label="Добавить точку", command=self.add_point)
         self._menu.add_command(label="Удалить точку", command=self.delete_point)
+        if self._selection and self._selection[0] in ("node", "group"):
+            self._menu.add_command(label="Удалить объект", command=self.delete_selected)
+        elif self._selection and self._selection[0] in (
+                "edge", "bend", "exit", "entry", "label"):
+            self._menu.add_command(label="Удалить связь", command=self.delete_connection)
         self._menu.add_command(label="Удалить все узлы", command=self.clear_bends)
         self._menu.add_command(label="Сделать ортогональной", command=self.orthogonalize)
         self._menu.add_separator()
@@ -856,8 +1415,8 @@ class InteractiveCanvas(ttk.Frame):
             del points[interior_index]
         if points and self._on_edge_moved:
             self._on_edge_moved(edge_index, points)
-        elif self._on_edge_cleared:
-            self._on_edge_cleared(edge_index)
+        else:
+            self._straighten(edge_index)
 
     def add_point(self) -> None:
         """Добавляет точку на выбранный блок или узел на выбранной связи."""
@@ -912,8 +1471,8 @@ class InteractiveCanvas(ttk.Frame):
             if self._on_ports:
                 self._on_ports(sel[1], ports)
             return
-        if sel[0] == "edge":
-            self.clear_bends()
+        if sel[0] in ("node", "group", "edge"):
+            self._say("Выберите точку, которую нужно удалить")
             return
         found = self._edge_from_selection()
         if found is None:
@@ -927,8 +1486,8 @@ class InteractiveCanvas(ttk.Frame):
             self._selection = ("edge", edge.a, edge.b, sel[3])
             if points and self._on_edge_moved:
                 self._on_edge_moved(index, points)
-            elif self._on_edge_cleared:
-                self._on_edge_cleared(index)
+            else:
+                self._straighten(index)
             return
         if sel[0] in ("exit", "entry"):
             manual = edge.exit_at if sel[0] == "exit" else edge.entry_at
@@ -942,19 +1501,45 @@ class InteractiveCanvas(ttk.Frame):
         self._say("Выберите точку, которую нужно удалить")
 
     def clear_bends(self) -> None:
-        """Убирает все промежуточные узлы выбранной связи."""
+        """Убирает все промежуточные узлы: остаются вход и выход."""
         found = self._edge_from_selection()
         if found is None:
             self._say("Выберите связь, у которой нужно убрать узлы")
             return
         index, edge = found
-        if not edge.waypoints:
-            self._say("У связи нет промежуточных узлов")
+        if edge.a == edge.b:
+            self._say("Петля на себя не сводится к входу и выходу")
+            return
+        if len(edge.points) <= 2 and not edge.waypoints:
+            self._say("У связи уже только вход и выход")
             return
         self._selection = ("edge", edge.a, edge.b, self._selection[3])
-        if self._on_edge_cleared:
-            self._on_edge_cleared(index)
-        self._say(f"Узлы связи {edge.a} → {edge.b} убраны")
+        self._straighten(index)
+
+    def _straighten(self, index: int) -> None:
+        """Соединяет текущие выход и вход напрямую."""
+        if self._diagram is None or not (0 <= index < len(self._diagram.edges)):
+            return
+        edge = self._diagram.edges[index]
+        if edge.a == edge.b:
+            if self._on_edge_cleared:
+                self._on_edge_cleared(index)
+            return
+        if len(edge.points) < 2:
+            return
+        left = self._host_obj(edge.a)
+        right = self._host_obj(edge.b)
+        if left is None or right is None or not self._on_straight:
+            if self._on_edge_cleared:
+                self._on_edge_cleared(index)
+            return
+        start, end = edge.points[0], edge.points[-1]
+        self._on_straight(
+            index,
+            self._snap_offset(left, start[0], start[1]),
+            self._snap_offset(right, end[0], end[1]),
+        )
+        self._say(f"У связи {edge.a} → {edge.b} остались вход и выход")
 
     def orthogonalize(self) -> None:
         """Выравнивает изменённые связи, сдвигая узлы как можно меньше."""
@@ -1008,8 +1593,37 @@ class InteractiveCanvas(ttk.Frame):
             self._snap_offset(right, routed[-1][0], routed[-1][1]),
         )
 
-    def _on_delete_key(self, _event) -> str:
+    def delete_selected(self) -> None:
+        """Удаляет выбранный блок, пакет или связь. Точку удаляет как точку."""
+        sel = self._selection
+        if self._diagram is None or sel is None:
+            self._say("Выберите объект или связь")
+            return
+        if sel[0] in ("node", "group"):
+            name = sel[1]
+            self._selection = None
+            if self._on_delete_object:
+                self._on_delete_object(name)
+            self._say(f"Удалён {name}")
+            return
+        if sel[0] == "edge":
+            self.delete_connection()
+            return
         self.delete_point()
+
+    def delete_connection(self) -> None:
+        found = self._edge_from_selection()
+        if found is None:
+            self._say("Выберите связь, которую нужно удалить")
+            return
+        index, edge = found
+        self._selection = None
+        if self._on_delete_edge:
+            self._on_delete_edge(index)
+        self._say(f"Удалена связь {edge.a} → {edge.b}")
+
+    def _on_delete_key(self, _event) -> str:
+        self.delete_selected()
         return "break"
 
     def _remember(self, kind) -> None:

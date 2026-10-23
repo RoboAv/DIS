@@ -100,6 +100,8 @@ class Edge:
     # Промежуточные узлы линии. Пусто — маршрут строит раскладка.
     waypoints: list[tuple[float, float]] = field(default_factory=list)
     locked: bool = False
+    # Только вход и выход, без промежуточных изгибов.
+    straight: bool = False
     # Смещение точки выхода и входа от левого верха своего блока.
     exit_at: tuple[float, float] | None = None
     entry_at: tuple[float, float] | None = None

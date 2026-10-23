@@ -19,10 +19,13 @@ from ..positions import (
     clear_edge_end,
     clear_edge_waypoints,
     edge_ordinal,
+    remove_edge,
+    remove_object,
     schema_text,
     set_edge_end,
     set_edge_geometry,
     set_edge_label_offset,
+    set_edge_straight,
     set_edge_waypoints,
     set_node_ports,
     set_node_position,
@@ -35,7 +38,7 @@ from .examples import EXAMPLES, STARTER
 from .palette import colors as ui_colors
 from .palette import paint_popdowns
 from .preview import Preview
-from .scene import InteractiveCanvas
+from .scene import SNAP_FACTORS, InteractiveCanvas
 
 FILE_TYPES = [
     ("Диаграмма UML Studio", "*.uml"),
@@ -173,6 +176,13 @@ class App(tk.Tk):
             value=bool(self.settings.get("interactive", False)))
         self.positions_locked = tk.BooleanVar(
             value=bool(self.settings.get("positions_locked", True)))
+        self.show_hidden = tk.BooleanVar(value=False)
+        saved_snap = str(self.settings.get("snap_distance", "обычно"))
+        self.snap_distance = tk.StringVar(
+            value=saved_snap if saved_snap in SNAP_FACTORS else "обычно")
+        self.snap_edges = tk.BooleanVar(value=bool(self.settings.get("snap_edges", True)))
+        self.snap_centers = tk.BooleanVar(value=bool(self.settings.get("snap_centers", True)))
+        self.snap_nodes = tk.BooleanVar(value=bool(self.settings.get("snap_nodes", True)))
         self.last_result: api.RenderResult | None = None
         self._diagram = None
         self._schema_key: str | None = None
@@ -247,10 +257,15 @@ class App(tk.Tk):
             on_edge_end=self._on_edge_end,
             on_label=self._on_label,
             on_orthogonal=self._on_orthogonal,
+            on_straight=self._on_straight,
+            on_segment=self._on_segment,
+            on_delete_object=self._on_delete_object,
+            on_delete_edge=self._on_delete_edge,
             on_message=self._status,
             on_zoom_change=self._on_zoom,
         )
         self.preview.pack(fill="both", expand=True)
+        self._apply_snap()
         self.panes.add(right, weight=4)
         self.after(200, lambda: self._restore_sash())
 
@@ -337,6 +352,11 @@ class App(tk.Tk):
                              variable=self.positions_locked,
                              command=self._on_lock_toggle)
         view.add_separator()
+        self._fill_canvas_menu(view)
+        snap_menu = tk.Menu(view, tearoff=0)
+        self._fill_snap_menu(snap_menu)
+        view.add_cascade(label="Привязка", menu=snap_menu)
+        view.add_separator()
         view.add_command(label="Увеличить", accelerator="Ctrl+=",
                          command=lambda: self._active_view().zoom_in())
         view.add_command(label="Уменьшить", accelerator="Ctrl+-",
@@ -377,6 +397,41 @@ class App(tk.Tk):
 
         self.configure(menu=menubar)
 
+    def _fill_canvas_menu(self, menu: tk.Menu) -> None:
+        menu.add_command(label="Добавить точку", command=self._add_point)
+        menu.add_command(label="Удалить точку", command=self._delete_point)
+        menu.add_command(label="Удалить объект или связь", command=self._delete_selected)
+        menu.add_command(label="Удалить узлы", command=self._clear_bends)
+        menu.add_command(label="Сделать ортогональной", command=self._orthogonalize)
+        menu.add_separator()
+        menu.add_checkbutton(
+            label="Показывать скрытые связи", variable=self.show_hidden,
+            command=self._on_hidden_toggle)
+
+    def _fill_snap_menu(self, menu: tk.Menu) -> None:
+        for label in ("выкл", "близко", "обычно", "далеко", "безразмерная"):
+            menu.add_radiobutton(
+                label=label, value=label, variable=self.snap_distance,
+                command=self._apply_snap)
+        menu.add_separator()
+        menu.add_checkbutton(label="Края блоков", variable=self.snap_edges,
+                             command=self._apply_snap)
+        menu.add_checkbutton(label="Центры блоков", variable=self.snap_centers,
+                             command=self._apply_snap)
+        menu.add_checkbutton(label="Узлы связей", variable=self.snap_nodes,
+                             command=self._apply_snap)
+
+    def _apply_snap(self) -> None:
+        scene = getattr(self, "scene", None)
+        if scene is None:
+            return
+        scene.set_snap(
+            self.snap_distance.get(),
+            bool(self.snap_edges.get()),
+            bool(self.snap_centers.get()),
+            bool(self.snap_nodes.get()),
+        )
+
     def _button(self, parent, label: str, command, hint: str,
                 style: str = "TButton", **pack) -> ttk.Button:
         """Кнопка с надписью и всплывающей подсказкой."""
@@ -387,19 +442,27 @@ class App(tk.Tk):
 
     def _build_toolbar(self) -> None:
         bar = self.toolbar
-        for label, command, hint in (
-            ("Новый", self.new_file,
-             "Начать пустую диаграмму  ·  Ctrl+N"),
-            ("Открыть", self.open_file,
-             "Открыть файл с описанием диаграммы  ·  Ctrl+O"),
-            ("Сохранить", self.save_file,
-             "Сохранить текст диаграммы  ·  Ctrl+S"),
-            ("Экспорт PNG", self.export_png,
-             "Сохранить картинку в PNG с выбором места  ·  Ctrl+E"),
-        ):
-            self._button(bar, label, command, hint, side="left", padx=(0, 3))
-        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
+        self._button(bar, "Справка", self.show_help,
+                     "Открыть справку по синтаксису  ·  F1",
+                     side="right", padx=(6, 0))
+        theme_box = ttk.Combobox(bar, textvariable=self.diagram_theme,
+                                 state="readonly", values=list(DIAGRAM_THEMES),
+                                 width=11)
+        theme_box.pack(side="right")
+        tooltip.attach(theme_box, "Цветовая тема картинки. Строка "
+                                  "«set theme = …» в тексте имеет приоритет")
+        ttk.Label(bar, text="тема").pack(side="right", padx=(8, 4))
 
+        self._button(bar, "Открыть", self.open_file,
+                     "Открыть файл с описанием диаграммы  ·  Ctrl+O",
+                     side="left", padx=(0, 3))
+        self._button(bar, "Сохранить", self.save_file,
+                     "Сохранить текст диаграммы  ·  Ctrl+S",
+                     side="left", padx=(0, 3))
+        self._button(bar, "Экспорт", self.export_png,
+                     "Сохранить картинку в PNG  ·  Ctrl+E",
+                     side="left", padx=(0, 3))
+        ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
         self._button(bar, "Обновить", self.render_now,
                      "Перерисовать диаграмму прямо сейчас  ·  F5",
                      side="left", padx=(0, 3))
@@ -409,62 +472,40 @@ class App(tk.Tk):
         tooltip.attach(auto, "Автоматически перерисовывать диаграмму "
                              "через мгновение после правки текста")
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
-
         mode = ttk.Checkbutton(bar, text="интерактив", variable=self.interactive,
                                command=self._show_mode)
         mode.pack(side="left", padx=(0, 4))
         tooltip.attach(mode, "Справа вместо картинки — область, где блоки "
                              "и связи можно перетаскивать")
         self._lock_button = ttk.Checkbutton(
-            bar, text="Заблокировать", variable=self.positions_locked,
+            bar, text="замок", variable=self.positions_locked,
             command=self._on_lock_toggle)
         self._lock_button.pack(side="left")
         tooltip.attach(
             self._lock_button,
-            "Заблокировать: блоки, сдвинутые вручную, остаются на месте "
-            "при изменении схемы. Разблокировать: раскладка двигает их. "
+            "Замок включён: блоки, сдвинутые вручную, остаются на месте "
+            "при изменении схемы. Выключен: раскладка двигает их. "
             "Правый щелчок блокирует один объект",
         )
-        self._button(
-            bar, "Добавить точку", self._add_point,
-            "На выбранный блок — точка на границе, на выбранную связь — узел линии",
-            side="left", padx=(8, 3))
-        self._button(
-            bar, "Удалить точку", self._delete_point,
-            "Удалить выбранную точку входа, выхода, узла или свободную точку блока. "
-            "Если выбрана связь — убирает все её промежуточные узлы",
-            side="left")
-        self._button(
-            bar, "Удалить узлы", self._clear_bends,
-            "Убрать все промежуточные узлы выбранной связи",
-            side="left", padx=(0, 3))
-        self._button(
-            bar, "Ортогонально", self._orthogonalize,
-            "Выровнять изменённую связь по горизонтали и вертикали, "
-            "сдвинув узлы как можно меньше",
-            side="left")
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
-
-        self._button(bar, "Свой объект…", self.design_shape,
-                     "Собрать собственный вид объекта: форма, цвета, "
-                     "стереотип, секции  ·  Ctrl+1", side="left", padx=(0, 3))
-        self._button(bar, "Своя связь…", self.design_link,
-                     "Собрать собственный вид связи: линия, цвет, "
-                     "окончания  ·  Ctrl+2", side="left", padx=(0, 3))
-        self._button(bar, "Своя структура…", self.design_struct,
-                     "Собрать шаблон из объектов и связей, который "
-                     "разворачивается одной строкой  ·  Ctrl+3", side="left")
-
-        self._button(bar, "Справка", self.show_help,
-                     "Открыть справку по синтаксису  ·  F1",
-                     side="right", padx=(6, 0))
-        theme_box = ttk.Combobox(bar, textvariable=self.diagram_theme,
-                                 state="readonly", values=list(DIAGRAM_THEMES),
-                                 width=9)
-        theme_box.pack(side="right", padx=(4, 0))
-        tooltip.attach(theme_box, "Цветовая тема картинки. Строка "
-                                  "«set theme = …» в тексте имеет приоритет")
-        ttk.Label(bar, text="тема:").pack(side="right", padx=(8, 0))
+        canvas_menu = tk.Menu(bar, tearoff=0)
+        self._fill_canvas_menu(canvas_menu)
+        canvas_btn = ttk.Menubutton(bar, text="Холст", menu=canvas_menu)
+        canvas_btn.pack(side="left", padx=(0, 3))
+        tooltip.attach(
+            canvas_btn,
+            "Точки, удаление, ортогональность и скрытые связи",
+        )
+        snap_menu = tk.Menu(bar, tearoff=0)
+        self._fill_snap_menu(snap_menu)
+        snap_btn = ttk.Menubutton(bar, text="Привязка", menu=snap_menu)
+        snap_btn.pack(side="left")
+        tooltip.attach(
+            snap_btn,
+            "Близко, обычно и далеко — доля размера объекта. "
+            "Безразмерная липнет к ближайшему на любом расстоянии. "
+            "Узлы — любой связи, не только редактируемой",
+        )
         self.diagram_theme.trace_add("write", lambda *_: self.render_now())
 
     def _build_zoom_bar(self, parent) -> None:
@@ -766,9 +807,9 @@ class App(tk.Tk):
         text = self.editor.get_text()
         interactive = bool(self.interactive.get())
         self._honor = self._honor_manual(text)
-        scale = 1.0 if interactive else max(1.0, min(3.0, round(self.preview.zoom, 2)))
+        # Масштаб окна только увеличивает картинку. Раскладка та же, что у холста.
         self.worker.submit(_Job(
-            self._seq, text, scale, self.diagram_theme.get(),
+            self._seq, text, 1.0, self.diagram_theme.get(),
             self._honor, interactive,
         ))
         if not self._busy:
@@ -858,9 +899,7 @@ class App(tk.Tk):
             self.render_now()
 
     def _sync_lock_caption(self) -> None:
-        locked = bool(self.positions_locked.get())
-        self._lock_button.configure(
-            text="Заблокировать" if locked else "Разблокировать")
+        self._lock_button.configure(text="замок")
 
     def _on_lock_toggle(self) -> None:
         self._sync_lock_caption()
@@ -915,6 +954,15 @@ class App(tk.Tk):
             return
         self.scene.delete_point()
 
+    def _delete_selected(self) -> None:
+        if not self.interactive.get():
+            self._status("Удаление с холста доступно в интерактивном режиме")
+            return
+        self.scene.delete_selected()
+
+    def _on_hidden_toggle(self) -> None:
+        self.scene.set_show_hidden(self.show_hidden.get())
+
     def _clear_bends(self) -> None:
         if not self.interactive.get():
             self._status("Узлы убираются в интерактивном режиме")
@@ -963,6 +1011,54 @@ class App(tk.Tk):
                 waypoints, exit_at, entry_at, src_line=edge.src_line,
             )
         self._write_text(text)
+
+    def _on_segment(self, index: int, interior: list[tuple[float, float]],
+                    exit_at: tuple[float, float] | None,
+                    entry_at: tuple[float, float] | None) -> None:
+        edge = self._edge(index)
+        if edge is None or self._diagram is None:
+            return
+        ordinal = edge_ordinal(self._diagram.edges, index)
+        text = self.editor.get_text()
+        if not interior and exit_at is not None and entry_at is not None:
+            text = set_edge_straight(
+                text, edge.a, edge.b, ordinal, exit_at, entry_at,
+                src_line=edge.src_line,
+            )
+        else:
+            if interior:
+                text = set_edge_waypoints(
+                    text, edge.a, edge.b, ordinal, interior, src_line=edge.src_line,
+                )
+            if exit_at is not None:
+                text = set_edge_end(text, "exit", edge.a, edge.b, ordinal, exit_at)
+            if entry_at is not None:
+                text = set_edge_end(text, "entry", edge.a, edge.b, ordinal, entry_at)
+        self._write_text(text)
+
+    def _on_delete_object(self, name: str) -> None:
+        self._write_text(remove_object(self.editor.get_text(), name))
+
+    def _on_delete_edge(self, index: int) -> None:
+        edge = self._edge(index)
+        if edge is None or self._diagram is None:
+            return
+        self._write_text(remove_edge(
+            self.editor.get_text(), edge.a, edge.b,
+            edge_ordinal(self._diagram.edges, index),
+            src_line=edge.src_line,
+        ))
+
+    def _on_straight(self, index: int, exit_at: tuple[float, float],
+                     entry_at: tuple[float, float]) -> None:
+        edge = self._edge(index)
+        if edge is None or self._diagram is None:
+            return
+        self._write_text(set_edge_straight(
+            self.editor.get_text(), edge.a, edge.b,
+            edge_ordinal(self._diagram.edges, index),
+            exit_at, entry_at, src_line=edge.src_line,
+        ))
 
     def _on_edge_cleared(self, index: int) -> None:
         edge = self._edge(index)
@@ -1111,7 +1207,8 @@ class App(tk.Tk):
         self.update_idletasks()
         try:
             result = api.render_to_file(self.editor.get_text(), str(path),
-                                        scale=scale, supersample=2,
+                                        scale=1, supersample=2,
+                                        output_scale=scale,
                                         honor_manual=self._honor)
         except Exception as exc:
             messagebox.showerror("Экспорт не удался", str(exc), parent=self)
@@ -1189,6 +1286,10 @@ class App(tk.Tk):
             "editor_font": self.editor.font_size(),
             "interactive": bool(self.interactive.get()),
             "positions_locked": bool(self.positions_locked.get()),
+            "snap_distance": self.snap_distance.get(),
+            "snap_edges": bool(self.snap_edges.get()),
+            "snap_centers": bool(self.snap_centers.get()),
+            "snap_nodes": bool(self.snap_nodes.get()),
         })
         try:
             self.settings["sash"] = self.panes.sashpos(0)

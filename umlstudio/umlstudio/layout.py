@@ -1464,7 +1464,8 @@ def _apply_manual_positions(diagram: Diagram, style: StyleResolver,
         return group.pin is not None and (honor_manual or group.locked)
 
     def take_edge(edge: Edge) -> bool:
-        return bool(edge.waypoints) and (honor_manual or edge.locked)
+        manual = bool(edge.waypoints) or edge.straight
+        return manual and (honor_manual or edge.locked)
 
     if not any(take_node(node) for node in diagram.nodes.values()) and \
             not any(take_group(group) for group in diagram.groups.values()) and \
@@ -1507,7 +1508,10 @@ def _apply_manual_positions(diagram: Diagram, style: StyleResolver,
 
     for edge in diagram.edges:
         if take_edge(edge):
-            _route_waypoints(diagram, edge, style)
+            if edge.straight and not edge.waypoints:
+                _route_straight(diagram, edge, style)
+            else:
+                _route_waypoints(diagram, edge, style)
             continue
         if edge.a == edge.b:
             continue
@@ -1630,6 +1634,18 @@ def _reroute(diagram: Diagram, edge: Edge, opts: LayoutOptions,
     if left is None or right is None or left is right:
         return
     edge.points = _direct_route(left, right, opts, style)
+
+
+def _route_straight(diagram: Diagram, edge: Edge, style: StyleResolver) -> None:
+    """Оставляет у связи только вход и выход."""
+    left = _endpoint(diagram, edge.a)
+    right = _endpoint(diagram, edge.b)
+    if left is None or right is None or left is right:
+        return
+    edge.points = [
+        _clip_end(left, (right.cx, right.cy), style),
+        _clip_end(right, (left.cx, left.cy), style),
+    ]
 
 
 def _route_waypoints(diagram: Diagram, edge: Edge, style: StyleResolver) -> None:

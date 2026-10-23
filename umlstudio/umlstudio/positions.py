@@ -11,10 +11,13 @@ import re
 from .parser import (
     AT_LINE,
     AT_SUFFIX,
+    CONN,
     DECL,
     END_LINE,
     LABEL_LINE,
     PORTS_LINE,
+    REL_HEAD,
+    REL_TAIL,
     VIA_ATTR,
     VIA_LINE,
     has_lock,
@@ -167,6 +170,79 @@ def set_edge_geometry(text: str, source: str, target: str, ordinal: int,
     return set_edge_end(text, "entry", source, target, ordinal, entry_at)
 
 
+def set_edge_straight(text: str, source: str, target: str, ordinal: int,
+                      exit_at: tuple[float, float],
+                      entry_at: tuple[float, float],
+                      src_line: int | None = None) -> str:
+    """Убирает промежуточные узлы: линия идёт от выхода сразу ко входу."""
+    lines, newline, ends = _split(text)
+    found = None
+    already = False
+    for index, line in enumerate(lines):
+        if not _via_names(line, source, target, ordinal):
+            continue
+        matched = VIA_LINE.match(line.strip())
+        already = bool(matched and has_lock(matched.group("pts")))
+        found = index
+        break
+    written = _via_text(source, target, ordinal, "прямо", " lock" if already else "")
+    if found is None:
+        lines = _insert(lines, written)
+    else:
+        lines[found] = written
+    if src_line:
+        lines = _strip_inline_via(lines, src_line)
+    text = _join(lines, newline, ends)
+    text = set_edge_end(text, "exit", source, target, ordinal, exit_at)
+    return set_edge_end(text, "entry", source, target, ordinal, entry_at)
+
+
+def remove_object(text: str, name: str) -> str:
+    """Удаляет объект, его блок и все связи и координаты, где он упомянут."""
+    lines, newline, ends = _split(text)
+    skip: set[int] = set()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if _relation_ends(line) and name in _relation_ends(line):
+            skip.add(index)
+            index += 1
+            continue
+        if _declares(line, name) or line.strip() in (name, f'"{name}"'):
+            end = _block_end(lines, index)
+            skip.update(range(index, end))
+            index = end
+            continue
+        if _directive_mentions(line, name):
+            skip.add(index)
+        index += 1
+    kept = [line for index, line in enumerate(lines) if index not in skip]
+    return _join(kept, newline, ends)
+
+
+def remove_edge(text: str, source: str, target: str, ordinal: int,
+                src_line: int | None = None) -> str:
+    """Удаляет одну связь и её координаты. Более поздние номера той же пары сдвигаются."""
+    lines, newline, ends = _split(text)
+    seen = 0
+    drop = None
+    for index, line in enumerate(lines):
+        if _relation_ends(line) != (source, target):
+            continue
+        seen += 1
+        if seen == ordinal:
+            drop = index
+            break
+    if drop is None and src_line and 1 <= src_line <= len(lines):
+        drop = src_line - 1
+    kept = []
+    for index, line in enumerate(lines):
+        if index == drop or _edge_directive(line, source, target, ordinal):
+            continue
+        kept.append(_renumber_directive(line, source, target, ordinal))
+    return _join(kept, newline, ends)
+
+
 def edge_ordinal(edges, index: int) -> int:
     """Номер связи среди рёбер с теми же концами, начиная с 1."""
     edge = edges[index]
@@ -250,6 +326,99 @@ def _declares(line: str, name: str) -> bool:
     else:
         resolved = _unquote(name_tok)
     return resolved == name
+
+
+def _relation_ends(line: str) -> tuple[str, str] | None:
+    text = line.strip()
+    head = REL_HEAD.match(text)
+    if not head:
+        return None
+    rest = text[head.end():]
+    conn = CONN.match(rest)
+    if not conn:
+        return None
+    if not ((conn.group("l1") or "") + (conn.group("l2") or "")):
+        return None
+    tail = REL_TAIL.match(rest[conn.end():])
+    if not tail:
+        return None
+    left, right = _unquote(head.group("left")), _unquote(tail.group("right"))
+    if not left or not right:
+        return None
+    return left, right
+
+
+def _brace_delta(text: str) -> int:
+    depth, quoted, index = 0, False, 0
+    while index < len(text):
+        ch = text[index]
+        if ch == '"':
+            quoted = not quoted
+        elif not quoted:
+            if ch == "{":
+                mod = re.match(
+                    r"\{\s*(?:static|abstract|classifier|field|method)\s*\}",
+                    text[index:],
+                )
+                if mod:
+                    index += mod.end()
+                    continue
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+        index += 1
+    return depth
+
+
+def _block_end(lines: list[str], start: int) -> int:
+    depth = _brace_delta(lines[start])
+    index = start + 1
+    if depth <= 0:
+        if index < len(lines) and lines[index].strip().startswith("{"):
+            depth = _brace_delta(lines[index])
+            index += 1
+        else:
+            return start + 1
+    while index < len(lines) and depth > 0:
+        depth += _brace_delta(lines[index])
+        index += 1
+    return index
+
+
+def _directive_mentions(line: str, name: str) -> bool:
+    if _at_names(line, name) or _port_names(line, name):
+        return True
+    for pattern in (VIA_LINE, END_LINE, LABEL_LINE):
+        found = pattern.match(line.strip())
+        if not found:
+            continue
+        if name in (_unquote(found.group("a")), _unquote(found.group("b"))):
+            return True
+    return False
+
+
+def _edge_directive(line: str, source: str, target: str, ordinal: int) -> bool:
+    return (_via_names(line, source, target, ordinal)
+            or _end_names(line, "exit", source, target, ordinal)
+            or _end_names(line, "entry", source, target, ordinal)
+            or _label_names(line, source, target, ordinal))
+
+
+def _renumber_directive(line: str, source: str, target: str, ordinal: int) -> str:
+    for pattern in (VIA_LINE, END_LINE, LABEL_LINE):
+        found = pattern.match(line.strip())
+        if not found:
+            continue
+        if (_unquote(found.group("a")) != source
+                or _unquote(found.group("b")) != target):
+            return line
+        if not found.group("n"):
+            return line
+        number = int(found.group("n"))
+        if number <= ordinal:
+            return line
+        return re.sub(rf"#{number}\b", f"#{number - 1}", line, count=1)
+    return line
 
 
 def _strip_inline_via(lines: list[str], src_line: int) -> list[str]:

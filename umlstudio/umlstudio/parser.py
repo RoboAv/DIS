@@ -1249,20 +1249,21 @@ class Parser:
             self._warn(no, "ожидалось: via A B [#n] x, y; ... [lock]", stripped)
             return
         points = parse_points(found.group("pts"))
-        if not points and not has_lock(found.group("pts")):
+        straight = _straight_mark(found.group("pts"))
+        if not points and not straight and not has_lock(found.group("pts")):
             self._warn(no, "у via нет координат", stripped)
             return
         index = int(found.group("n")) if found.group("n") else None
         self._vias.append((
             no, _unquote(found.group("a")), _unquote(found.group("b")),
-            index, points, has_lock(found.group("pts")),
+            index, points, has_lock(found.group("pts")), straight,
         ))
 
     def _apply_vias(self) -> None:
         buckets: dict[tuple[str, str], list[Edge]] = {}
         for edge in self.d.edges:
             buckets.setdefault((edge.a, edge.b), []).append(edge)
-        for no, a, b, index, points, locked in self._vias:
+        for no, a, b, index, points, locked, straight in self._vias:
             edges = buckets.get((a, b), [])
             if not edges:
                 self._warn(no, f"via: нет связи {a} -> {b}")
@@ -1274,8 +1275,12 @@ class Parser:
                 continue
             else:
                 target = edges[index - 1]
-            if points:
+            if straight:
+                target.straight = True
+                target.waypoints = []
+            elif points:
                 target.waypoints = points
+                target.straight = False
             target.locked = locked
 
     def _parse_ports(self, no: int, stripped: str) -> None:
@@ -1411,6 +1416,12 @@ def parse_points(text: str) -> list[tuple[float, float]]:
 
 def has_lock(text: str) -> bool:
     return re.search(rf"(?<!\w)(?:{_LOCK})(?!\w)", text, re.IGNORECASE) is not None
+
+
+def _straight_mark(text: str) -> bool:
+    """``прямо`` / ``straight`` вместо координат: у связи только вход и выход."""
+    cleaned = re.sub(rf"\s+(?:{_LOCK})\s*$", "", text.strip(), flags=re.IGNORECASE)
+    return cleaned.lower() in ("прямо", "straight", "direct")
 
 
 def _num(value: str, default: float) -> float:
