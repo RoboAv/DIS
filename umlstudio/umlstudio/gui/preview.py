@@ -87,8 +87,6 @@ class Preview(ttk.Frame):
         self.zoom = max(ZOOM_STEPS[0], min(ZOOM_STEPS[-1], value))
         self._redraw()
         self._notify()
-        if request_render and self._on_scale_request:
-            self._on_scale_request(self.zoom)
 
     def zoom_in(self) -> None:
         self.set_zoom(self._next_step(1))
@@ -188,11 +186,19 @@ class Preview(ttk.Frame):
     def _drag(self, event) -> None:
         if self._drag_origin is None:
             return
-        dx = event.x - self._drag_origin[0]
-        dy = event.y - self._drag_origin[1]
+        dx = (event.x - self._drag_origin[0]) * 0.35
+        dy = (event.y - self._drag_origin[1]) * 0.35
         self._drag_origin = (event.x, event.y)
-        self.canvas.xview_scroll(-int(dx / 2) or (-1 if dx > 0 else 1), "units")
-        self.canvas.yview_scroll(-int(dy / 2) or (-1 if dy > 0 else 1), "units")
+        region = self.canvas.cget("scrollregion")
+        if not region:
+            return
+        rx0, ry0, rx1, ry1 = (float(part) for part in str(region).split())
+        width = max(1.0, rx1 - rx0)
+        height = max(1.0, ry1 - ry0)
+        x0 = self.canvas.xview()[0]
+        y0 = self.canvas.yview()[0]
+        self.canvas.xview_moveto(min(1.0, max(0.0, x0 - dx / width)))
+        self.canvas.yview_moveto(min(1.0, max(0.0, y0 - dy / height)))
 
     def _release(self, event) -> None:
         self._drag_origin = None
