@@ -2,14 +2,16 @@
 
 title Варианты использования валидации юридического лица
 set direction = LR
+set theme = light
+set edge_style = ortho
+set font = Segoe UI
+set hide_empty = on
+set shadow = off
 
 actor client as "Клиент"
 actor employee as "Сотрудник"
 actor admin as "Администратор"
 actor externals as "Внешние системы"
-
-client -[hidden, right]- employee
-admin -------[hidden, left]- externals
 
 package company_validation as "Система валидации юридического лица" {
 
@@ -51,36 +53,132 @@ link extend {
   label: <<extend>>
 }
 
-link yellow {
+link by_client {
+  line: solid
+  head: none
+  tail: none
   color: #BDB76B
 }
 
-link red {
-  color: #FF0000
+link by_employee {
+  line: solid
+  head: none
+  tail: none
+  color: #C62828
 }
 
-link orange {
-  color: #FF8C00
+link by_admin {
+  line: solid
+  head: none
+  tail: none
+  color: #2E7D32
 }
 
-link green {
-  color: #006400
+link by_externals {
+  line: solid
+  head: none
+  tail: none
+  color: #EF6C00
 }
 
-client -[yellow]- application_service
-employee -[red]- application_service
-employee -[red]- check_service
-admin -[green]- admin_service
-externals -[orange]- check_service
+' Акторы слева, варианты — колонками внутри пакетов.
+at client 36, 120
+at employee 24, 430
+at externals 8, 760
+at admin 16, 1040
+
+at submit_data 420, 80
+at view_result 420, 210
+at manage_application 760, 130
+
+at record_deal_terms 420, 430
+at start_checking 760, 450
+at issue_conclusion 741, 600
+at identify 1120, 390
+at run_mandatory_checks 1120, 530
+at account_indicators 1120, 670
+at request_external 1120, 790
+
+at maintain_system 760, 1020
+at read_reports 760, 1140
+
+client -[by_client]- submit_data
+via client submit_data #1 250, 150; 250, 113
+exit client submit_data #1 77, 22
+entry client submit_data #1 0, 33
+
+client -[by_client]- view_result
+via client view_result #1 300, 175; 300, 243
+exit client view_result #1 77, 55
+entry client view_result #1 0, 33
+
+employee -[by_employee]- manage_application
+via employee manage_application #1 280, 460; 280, 163
+exit employee manage_application #1 104, 20
+entry employee manage_application #1 0, 33
+
+employee -[by_employee]- record_deal_terms
+via employee record_deal_terms #1 220, 490; 220, 483
+exit employee record_deal_terms #1 104, 55
+entry employee record_deal_terms #1 0, 53
+
+employee -[by_employee]- start_checking
+via employee start_checking #1 180, 470; 180, 560; 860, 560
+exit employee start_checking #1 104, 40
+entry employee start_checking #1 100, 66
+
+employee -[by_employee]- issue_conclusion
+via employee issue_conclusion #1 340, 505; 340, 633
+exit employee issue_conclusion #1 70, 75
+entry employee issue_conclusion #1 0, 33
+
+externals -[by_externals]- request_external
+via externals request_external #1 260, 797; 260, 843
+exit externals request_external #1 155, 37
+entry externals request_external #1 0, 53
+
+admin -[by_admin]- maintain_system
+via admin maintain_system #1 300, 1070; 300, 1053
+exit admin maintain_system #1 139, 24
+entry admin maintain_system #1 0, 33
+
+admin -[by_admin]- read_reports
+via admin read_reports #1 360, 1110; 360, 1173
+exit admin read_reports #1 139, 58
+entry admin read_reports #1 0, 33
 
 submit_data -[extend]-> manage_application
+via submit_data manage_application #1 700, 113; 700, 163
+exit submit_data manage_application #1 201, 33
+entry submit_data manage_application #1 0, 20
+
 view_result -[extend]-> manage_application
+via view_result manage_application #1 700, 243; 700, 176
+exit view_result manage_application #1 248, 33
+entry view_result manage_application #1 0, 46
+
+record_deal_terms -[extend]-> start_checking
 
 start_checking -[include]-> identify
+via start_checking identify #1 1040, 470; 1040, 443
+exit start_checking identify #1 201, 16
+entry start_checking identify #1 0, 53
+
 start_checking -[include]-> run_mandatory_checks
+via start_checking run_mandatory_checks #1 1060, 483; 1060, 583
+exit start_checking run_mandatory_checks #1 201, 33
+entry start_checking run_mandatory_checks #1 0, 53
+
 start_checking -[include]-> account_indicators
+via start_checking account_indicators #1 1080, 500; 1080, 703
+exit start_checking account_indicators #1 201, 50
+entry start_checking account_indicators #1 0, 33
+
 start_checking -[include]-> request_external
-record_deal_terms -[extend]-> start_checking
-issue_conclusion -[left, include]-> start_checking
+via start_checking request_external #1 990, 500; 990, 770; 1233, 770
+exit start_checking request_external #1 201, 50
+entry start_checking request_external #1 113, 0
+
+issue_conclusion -[include]-> start_checking
 
 @enduml

@@ -7,7 +7,7 @@ set node_sep = 100
 set font_size = 16
 set font = Segoe UI
 set hide_empty = on
-set padding = 48
+set padding = 36
 set shadow = off
 set edge_style = ortho
 
@@ -114,58 +114,88 @@ control "Правило хранения" as Rule {
   событие начала отсчёта
 }
 
-Person ||-[right]-o{ Part : участвует
-Part }o-[right]-|| Company : в организации
-Company ||-[right]-o{ Hold : владеет
-Hold }o--[notowning, up, up]-|| Company : объект
+' Положение блоков. Без этих строк раскладка снова автоматическая.
+at Person 56, 121
+at Part 356, 62.5
+at Company 700, 121
+at Hold 995, 88
+at Rule 1300, 121
+at Consent 90.5, 430
+at Check 332.5, 430
+at Report 685, 430
+at Request 349, 700
+at Fact 708, 700
+at Terms 8, 700
+at Used 723, 1000
+at Approval 48, 1400
+at Pledge 360, 1400
+at Verdict 700, 1400
 
-Person ||-[down]-o{ Consent : даёт
-Company ||-[down]-o{ Consent : даёт
-Consent |o--[right]-o{ Check : допускает
-Part |o-[down]-o{ Check : по лицу
+Person ||--o{ Part : участвует
+Part }o--|| Company : в организации
+Company ||--o{ Hold : владеет
 
-' Check -[hidden, left]- Report
+' Петля владения идёт над блоками, не через соседние сущности.
+Hold }o--|| Company : объект
+via Hold Company #1 1089.5, 36; 797.5, 36
+exit Hold Company #1 94.5, 0
+entry Hold Company #1 97.5, 0
 
-Company ||-[down]-o{ Report : ведёт
-Report |o--[down]-o{ Fact : содержит
-' Company ||-----[notowning, down, up]-o{ Fact : имеет
-Fact ||-[right]-o{ Used : входит
-Used }o-[right]-|| Request : в заявке
+Person ||--o{ Consent : даёт (лицо)
 
-Company ||-[down]-o{ Request : подаёт
-' Request }o----[notowning, up, right]-o{ Company : поручитель
-Request }o-[right]-|| Terms : на условиях
-Check -[hidden,down]- Request
-Check }|---[notowning, down, up]-|| Request : проходит
+' Второе «даёт» обходит верхний ряд слева, чтобы не пересечь «по лицу».
+Company ||--o{ Consent : даёт (организация)
+via Company Consent #1 736, 24; 20, 24; 20, 499
+exit Company Consent #1 36, 0
+entry Company Consent #1 0, 69
 
-' Request -[hidden,down]- Approval
-Request ||---[notowning, down, up]-o{ Approval : одобрена
-Request ||--[down]-o{ Pledge : предлагает
-' Pledge }o--[notowning, right, up]-o| Company : собственник
-Request ||-[down]-o{ Verdict : рассматривается
+Consent |o--o{ Check : допускает
+Part |o--o{ Check : по лицу
+Company ||--o{ Report : ведёт
+Report |o--o{ Fact : содержит
 
-' Rule ||-----[notowning, left, left]-o{ Person : клиент
-' Rule ||---[notowning, up, down]-o{ Company : клиент
-' Rule ||--[up]-o{ Fact : показатель
-' Rule -[hidden,up]- Request
-' Rule -[hidden,up]- Terms
-' Rule ||-[notowning, up, down]-o{ Request : пакет
-' Rule ||---[notowning, up, down]-o{ Terms : условия
+Check }|--|| Request : проходит
 
-Person -[hidden,right]- Part
-Part -[hidden,right]- Company
+' «Подаёт» спускается по зазору между проверкой и отчётностью.
+Company ||--o{ Request : подаёт
+via Company Request #1 724, 370; 623, 370; 623, 640; 500, 640
+exit Company Request #1 24, 138
+entry Company Request #1 151, 0
+labelat Company Request #1 -90, 120
 
-Consent -[hidden,right]- Check
-Check -[hidden,right]- Report
-' Report -[hidden,right]- Hold
+Fact ||--o{ Used : входит
 
-Fact -[hidden,right]- Used
-Used -[hidden,right]- Request
-Request -[hidden,right]- Terms
+' «В заявке» заходит снизу, ниже показателя, и не режет вертикаль «входит».
+Used }o--|| Request : в заявке
+via Used Request #1 519, 1127
+exit Used Request #1 0, 127.5
+entry Used Request #1 170, 138
 
-' Rule -[hidden,right]- Approval
-Approval -[hidden,right]- Pledge
-Pledge -[hidden,right]- Verdict
+Request }o--|| Terms : на условиях
+
+Request ||--o{ Approval : одобрена
+via Request Approval #1 385, 1320; 175, 1320
+exit Request Approval #1 36, 138
+entry Request Approval #1 127, 0
+labelat Request Approval #1 -180, 70
+
+Request ||--o{ Pledge : предлагает
+via Request Pledge #1 427, 1360; 473.5, 1360
+exit Request Pledge #1 78, 138
+entry Request Pledge #1 113.5, 0
+labelat Request Pledge #1 40, 230
+
+Request ||--o{ Verdict : рассматривается
+via Request Verdict #1 469, 1320; 785.5, 1320
+exit Request Verdict #1 120, 138
+entry Request Verdict #1 85.5, 0
+labelat Request Verdict #1 140, 20
+
+' Отложенные связи предметной области. На схему не выведены:
+' Company ||--o{ Fact : относится к
+' Request }o--o| Company : поручитель
+' Pledge }o--o| Company : собственник
+' Check }o--o| Company : по организации
 
 legend
 Синий — данные предметной области
